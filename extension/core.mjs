@@ -85,9 +85,13 @@
 //                                            stale() turns true once the session was reset (core.sessionEpoch moved)
 //                                            after the callback started: a callback that awaits must check it and
 //                                            drop its effects instead of acting on the next session's state.
-// core.markExtensionTurn(kind)               mark the current agent run (call from before_agent_start): every
-//                                            tool_call in it is blocked; cleared at the next before_agent_start /
-//                                            agent_end. core.blockAllToolsInTurn() -> boolean, core.turn -> {kind}
+// core.markExtensionTurn(kind)               mark the current agent run as a goal-race or warm turn (call from
+//                                            before_agent_start). core.blockAllToolsInTurn() -> boolean, core.turn -> {kind}
+// run marking (goalRun)                      set by a goal-continuation or senpi.todo-owed message_start, or by a
+//                                            continuation seen at before_agent_start. Cleared by a user-role
+//                                            message_start, the final agent_end (willRetry keeps it), agent_settled
+//                                            and session reset. Every tool_call is blocked only while parked AND
+//                                            limitless holds the goal paused; a user run blocks only task/task_create.
 // core.setControlReader(fn(ctx, kind))       control-file hook (todo 9): awaited at the start of every boundary
 //                                            and timer tick; it may change state.mode or call release()
 // core.now(), core.hhmm(ms)                  injected clock; HH:MM today, M/D HH:MM on another local day
