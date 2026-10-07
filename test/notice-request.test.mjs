@@ -9,7 +9,7 @@ import { join } from "node:path";
 import { pathToFileURL } from "node:url";
 import { createHarness } from "./harness.mjs";
 import { startLimitless } from "../extension/limitless.mjs";
-import { senpiDistCandidates } from "../extension/core.mjs";
+import { hhmm, senpiDistCandidates } from "../extension/core.mjs";
 
 const T0 = Date.UTC(2026, 9, 7, 3, 0, 0);
 const RESET = T0 + 3600000;
@@ -63,6 +63,23 @@ test("no limitless notice text reaches the request at park start, goal held, or 
     assert.equal(h.notice(), undefined, "release clears the widget");
     assert.doesNotMatch(await request(runner, h), /리셋 뒤 시작합니다|goal을 멈췄고|사용량 한도 대기/);
     assert.deepEqual(h.sentMessages, []);
+  } finally { h.cleanup(); }
+});
+
+// F3 P1: a no-goal park posts the same no-goal text into the widget and never a message, so it cannot reach the model.
+test("no-goal park notice is widget-only: never a message, never in the request", { skip }, async () => {
+  const runner = await realRunner();
+  const h = createHarness({ now: T0, goal: null });
+  try {
+    const core = startLimitless(h.pi, h.deps());
+    await h.fire("session_start", { type: "session_start", reason: "startup" });
+    await core.park({ state: "park-wait", window: "five_hour", resetAt: RESET, reason: "5h 95%" });
+    assert.equal(h.notice(), `⏸ 사용량 한도 대기 (five_hour 95%) · ${hhmm(RESET)} 재개. goal이 없어 작업은 그대로 할 수 있습니다.`);
+    assert.deepEqual(h.sentMessages, []);
+    assert.deepEqual(h.sentUserMessages, []);
+    assert.doesNotMatch(await request(runner, h), /사용량 한도 대기|goal이 없어/);
+    await core.release({ reason: "test" });
+    assert.equal(h.notice(), undefined);
   } finally { h.cleanup(); }
 });
 

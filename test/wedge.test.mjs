@@ -152,7 +152,8 @@ test("a goal paused by a park refresh after the episode notice was spent still a
   const { h, core } = setup({ goal: null });
   try {
     await h.fire("session_start", start);
-    assert.equal(h.notifications.length, 1, "episode notice at session start");
+    assert.match(h.notice(), /goal이 없어 작업은 그대로 할 수 있습니다/, "no-goal episode notice in the widget at session start");
+    assert.equal(h.notifications.length, 0, "the episode notice is a widget");
     h.setGoal(GOAL);
     h.clock.advance(61000);
     // A boundary poll re-parks (park refresh) and pauses the new goal before any goal_store_changed handler runs.
@@ -164,7 +165,7 @@ test("a goal paused by a park refresh after the episode notice was spent still a
     await h.fire("agent_settled", { type: "agent_settled" });
     assert.equal(h.notice(), HELD, "the held goal is announced once");
     assert.deepEqual(h.sentMessages, []);
-    assert.equal(h.notifications.length, 1, "no transient status line that the next status could overwrite");
+    assert.equal(h.notifications.length, 0, "no transient status line that the next status could overwrite");
   } finally { h.cleanup(); }
 });
 

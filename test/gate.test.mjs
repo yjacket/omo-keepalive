@@ -52,38 +52,79 @@ test("empty branch + ctx.model claude-sdk-oauth + shared 95% -> lane at session_
     assert.deepEqual(core.lane, { provider: "anthropic-subscription", accounts: ["default"] });
     assert.equal(usageCalls.length, 0);
     assert.ok(h.statusLines.get(STATUS_KEY).startsWith("⏸ 한도 대기"));
-    assert.equal(h.notifications.length, 1);
+    assert.match(h.notice(), /goal이 없어 작업은 그대로 할 수 있습니다/);
+    assert.equal(h.notifications.length, 0, "the no-goal notice is a widget, not a transient status line");
     assert.equal(core.isLatecomer(), true);
   } finally { h.cleanup(); }
 });
 
-test("no active goal + parked: task allowed, one notification, no pause", async () => {
+test("no active goal + parked: task allowed, one notice, no pause", async () => {
   const { h, core } = setup({ branch: PRIOR_TURN });
   try {
     await h.fire("session_start", { type: "session_start", reason: "startup" });
+    assert.match(h.notice(), /goal이 없어 작업은 그대로 할 수 있습니다/);
     const first = await h.runTurn({ tools: ["task", "task_create", "read"] });
     h.clock.advance(61000);
     const second = await h.runTurn({ tools: ["task"] });
     assert.equal(core.isParked(), true);
     assert.deepEqual(first.executed, ["task", "task_create", "read"]);
     assert.deepEqual(second.executed, ["task"]);
-    assert.equal(h.notifications.length, 1);
+    assert.equal(h.notifications.length, 0, "the episode notice is a widget");
     assert.deepEqual(h.goalStore.setStatusCalls, []);
   } finally { h.cleanup(); }
+});
+
+// F3 P1: the no-goal park notice must live in the same persistent widget as the goal notice, so it survives the next
+// setStatus instead of being overwritten (the old core.notify path was invisible when the park started mid-session).
+test("no-goal park: the widget shows the exact no-goal text, a later setStatus leaves it, release clears it", async () => {
+  const { h, core } = setup({ branch: PRIOR_TURN });
+  try {
+    await h.fire("session_start", { type: "session_start", reason: "startup" });
+    assert.equal(core.isParked(), true);
+    const text = h.notice();
+    assert.equal(text, `⏸ 사용량 한도 대기 (five_hour 95%) · ${hhmm(RESET)} 재개. goal이 없어 작업은 그대로 할 수 있습니다.`);
+    assert.equal(h.notifications.length, 0, "no transient status-line notification");
+    core.setStatus("some other status");
+    assert.equal(h.notice(), text, "the widget is not the status line: setStatus cannot overwrite it");
+    h.clock.advance(61000);
+    await core.poll({ force: true }); // same-episode refresh must not post a second notice
+    assert.equal(h.notice(), text, "one notice per park episode");
+    assert.deepEqual(h.sentMessages, [], "never a conversation message");
+    assert.deepEqual(h.sentUserMessages, []);
+    await core.release({ reason: "test" });
+    assert.equal(h.notice(), undefined, "release clears the no-goal notice");
+  } finally { h.cleanup(); }
+});
+
+test("process restart mid-park restores the no-goal notice", async () => {
+  const first = setup({ branch: PRIOR_TURN });
+  try {
+    await first.h.fire("session_start", { type: "session_start", reason: "startup" });
+    const liveNotice = first.h.notice();
+    assert.match(liveNotice, /goal이 없어 작업은 그대로 할 수 있습니다/);
+    const second = setup({ branch: PRIOR_TURN, homeDir: first.h.tmpHome });
+    second.h.clock.advance(5 * 60000);
+    await second.h.fire("session_start", { type: "session_start", reason: "resume" });
+    assert.equal(second.core.isParked(), true);
+    assert.equal(second.h.notice(), liveNotice, "restart mid-park restores the no-goal notice");
+    assert.equal(second.h.notifications.length, 0);
+  } finally { first.h.cleanup(); }
 });
 
 test("goal activated during the park is paused in the same tick with pausedByLimitless and the exact notice", async () => {
   const { h, core, state } = setup();
   try {
     await h.fire("session_start", { type: "session_start", reason: "startup" });
+    assert.match(h.notice(), /goal이 없어 작업은 그대로 할 수 있습니다/, "no-goal park notice first");
     h.setGoal(GOAL);
     await h.pi.events.emit("goal_store_changed", { threadId: "s1" });
     assert.equal(h.goalStore.goal.status, "paused");
     assert.equal(core.ownedGoalId(), "g1");
     assert.equal(state().pausedByLimitless, "g1");
     assert.deepEqual(h.sentMessages, [], "no conversation message");
-    assert.equal(h.notice(), `goal은 ${hhmm(RESET)} 리셋 뒤 시작합니다. 지금 돌리려면 /limitless resume`);
-    assert.equal(h.notifications.length, 1, "the goal-held notice is a widget, not a status line that the next status overwrites");
+    assert.equal(h.notice(), `goal은 ${hhmm(RESET)} 리셋 뒤 시작합니다. 지금 돌리려면 /limitless resume`, "the goal text replaces the no-goal text");
+    assert.doesNotMatch(h.notice(), /goal이 없어/);
+    assert.equal(h.notifications.length, 0, "the goal-held notice is a widget, not a status line that the next status overwrites");
     const turn = await h.runTurn({ tools: ["task"] });
     assert.deepEqual(turn.executed, []);
   } finally { h.cleanup(); }
@@ -270,6 +311,7 @@ test("process restart mid-park restores the park from the state file", async () 
 
 test("process restart with a non-parked state clears a stale notice widget", async () => {
   const { h } = setup({
+    util: 10, // below threshold: no fresh park that would set a new notice
     beforeStart: (harness) => {
       harness.writeHomeJson(".omo/limitless/state/s1.json", { v: 1, parkState: "ok", armed: false });
     },
