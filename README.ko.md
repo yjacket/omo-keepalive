@@ -47,7 +47,25 @@ goal이 도는 OMO 세션이 구독 사용량 한도에 닿으면 세션을 한�
 종료 후 재실행 경로는 `~/.omo-health/parks`에 park 기록을 쓴다. omo-health가 리셋
 시각에 그 기록을 읽어 Orca 또는 herdr에서 세션을 다시 띄운다.
 
+백그라운드 작업이 돌고 있는 동안에는 종료하지 않는다. 종료를 막는 것:
+
+- 실행 중인 서브에이전트와 DAG 노드
+- 백그라운드 eval 셀
+- 백그라운드 셸 세션
+- 모니터
+- 대기 중인 ask-user 질문
+- loop-guard 하드 정지
+- 대기 중인 omo-desk 보드
+- 개수를 읽을 수 없는 그 밖의 소스
+
+그 자리에서 기다리다가 모두 끝나고 세션이 끝남 알림을 처리한 뒤(다음 agent_settled)에만
+종료한다. reload는 종료를 강제하지 않는다. reload 뒤에는 세션이 한 번 settle되고 짧은 유예가
+지날 때까지 기다려, reload를 넘기고 살아남은 작업도 먼저 센다. 기다리는 동안(세션이 끝내 settle되지 않아도)은
+일반 한도 대기 상태로 있다가 리셋 때 그 자리에서 재개한다.
+
 터미널이 Orca나 herdr인데 최근에 살아 있는 omo-health 데몬이 없으면 종료하지 않는다.
+Orca/herdr 재실행에는 park 재개를 지원하는 omo-health(`daemon.json`의 `park-resume`
+capability)도 필요하다. 없으면 세션은 그 자리에서 기다린다.
 세션은 그 자리에서 한도 대기로 남았다가 리셋 때 그대로 재개한다.
 
 ## self-launch 대체 경로

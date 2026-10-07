@@ -1,8 +1,13 @@
 // limitless feature module: plan todo 8 "Park-exit with omo-health park record and resume on relaunch".
 //
 // Exit path (policy says park-exit):
-//   children drained (wake_source_state, unknown != zero) + idle + relauncher confirmed
-//   (fresh omo-health daemon for herdr/orca, or a registered self-launch task for unknown terminals)
+//   background work drained + idle + relauncher confirmed
+//   (fresh omo-health daemon that advertises the "park-resume" capability for herdr/orca, or a registered
+//   self-launch task for unknown terminals)
+//   Background work = every source the runtime publishes on pi.events "wake_source_state" ({source, activeCount}):
+//   senpi-task / omo-dag / senpi-task-member children, "senpi-codemode" detached eval cells,
+//   "terminal-background-sessions" background bash, "terminal-monitors", and any other. Exiting kills all of it, so
+//   ANY source above zero, or a report whose count is unreadable (unknown != zero), holds the exit.
 //   -> write <parksDir>/<sid>.<createdAt>.park.json (REPORT 9 D7) -> state parkState "exited"
 //   -> goal limitless paused set back to active -> ctx.shutdown().
 //   Any missing condition holds the session in park-wait without warming; todo 7 resumes it at reset.
@@ -28,12 +33,18 @@ import { readJson, sanitizeId, writeJsonAtomic } from "./state.mjs";
 
 export const DAEMON_STALE_MS = 45_000; // omo-health/extension/sensor.mjs:23,310
 export const RELAUNCH_REPARK_LIMIT = 3;
+export const PARK_RESUME_CAPABILITY = "park-resume"; // daemon.json capabilities entry: this omo-health collects park records
 export const CLAIM_FRESH_MS = 5 * 60_000; // relaunch window: a claim this young counts even without a start time
 const START_TOLERANCE_MS = 2000;
 const PROBE_TIMEOUT_MS = 5000;
 const GOAL_CONTINUATION_CAP = 8; // senpi goal/index.js:140-148
 const CHILD_WAKE_SOURCES = new Set(["senpi-task", "omo-dag"]); // omo-rollover/extension/rollover.ts:27
 const TIMER = "park-exit";
+const GATE_TIMER = "park-exit-gate";
+// After a session_start (reload included) limitless is loaded BEFORE the builtin terminal / ask-user / loop-guard and the
+// bundled codemode extensions, so its wake map is empty while they re-publish the counts of background work that survived.
+// No exit is attempted until the session settled once (turn_end / agent_settled) AND this grace passed on the injected clock.
+export const START_GRACE_MS = 5000;
 
 export const parksDir = (env, homeDir) => join(env.OMO_HEALTH_HOME || join(homeDir, ".omo-health"), "parks");
 export const recordName = (sid, createdAt) => `${sanitizeId(sid)}.${createdAt}.park.json`;
@@ -55,6 +66,14 @@ export function daemonFresh({ env, homeDir, now, fs = nodeFs }) {
   if (fs.existsSync(join(healthHome, "stopped"))) return false;
   const daemon = readJson(join(healthHome, "daemon.json"), fs);
   return Boolean(daemon) && Number.isFinite(daemon.ts) && now - daemon.ts <= DAEMON_STALE_MS && !daemon.stoppedMs;
+}
+
+// A daemon that only writes a fresh heartbeat (released omo-health) never collects park records: it counts as a
+// relauncher only when daemon.json lists the park-resume capability.
+export function daemonSupportsParkResume({ env, homeDir, fs = nodeFs }) {
+  const healthHome = env.OMO_HEALTH_HOME || join(homeDir, ".omo-health");
+  const capabilities = readJson(join(healthHome, "daemon.json"), fs)?.capabilities;
+  return Array.isArray(capabilities) && capabilities.includes(PARK_RESUME_CAPABILITY);
 }
 
 // OS process creation time in epoch ms, or null when unknown (probe failed or timed out). Never throws.
@@ -110,11 +129,21 @@ export function install(core) {
   };
   let ownStart; // memoized promise of this process's start time
   const selfLaunch = core.deps.selfLaunch ?? realSelfLaunch;
-  const wake = new Map();
+  const wake = new Map(); // source -> live count, or null when that source's last report was unreadable
   let spawnSeen = false;
   let busy = null;
   let exited = null; // fields re-asserted if anything touches the state after shutdown
   let ownClaim = null;
+  const startGraceMs = Number.isFinite(core.deps.parkExitStartGraceMs) ? core.deps.parkExitStartGraceMs : START_GRACE_MS;
+  let startGate = null; // {settled, readyAt} from a session_start until it opens; null = open
+  let drained = false; // a background count dropped to 0: the exit waits for the next agent_settled (completion notice delivered first)
+
+  const gateOpen = () => {
+    if (!startGate) return true;
+    if (!startGate.settled || core.now() < startGate.readyAt) return false;
+    startGate = null;
+    return true;
+  };
 
   const dir = () => parksDir(env, core.homeDir);
   const my = () => {
@@ -126,9 +155,28 @@ export function install(core) {
   const childCount = (ctx) => {
     let seen = false;
     let sum = 0;
-    for (const source of CHILD_WAKE_SOURCES) if (wake.has(source)) { seen = true; sum += wake.get(source); }
+    for (const source of CHILD_WAKE_SOURCES) {
+      if (!wake.has(source)) continue;
+      if (wake.get(source) === null) return null;
+      seen = true;
+      sum += wake.get(source);
+    }
     if (seen) return sum;
     return spawnSeen || spawnCallsIn(ctx?.sessionManager?.getBranch?.()) ? null : 0;
+  };
+
+  // Why exiting now would kill background work, or null when nothing is running. Every non-child source the
+  // runtime reports (detached eval cells, background bash, monitors, ...) counts; an unreadable count is busy.
+  const busyReason = (ctx) => {
+    const children = childCount(ctx);
+    if (children === null) return "children-unknown";
+    if (children !== 0) return "children-running";
+    for (const [source, count] of wake) {
+      if (CHILD_WAKE_SOURCES.has(source)) continue;
+      if (count === null) return `background-unknown:${source}`;
+      if (count > 0) return `background-running:${source}`;
+    }
+    return null;
   };
 
   const wantsExit = () => core.enabled() && core.isParked() && (core.state.parkState === "park-exit"
@@ -153,10 +201,13 @@ export function install(core) {
       const goal = owned ? await core.readGoal(ctx) : null;
       if (!owned || goal?.id !== owned || goal.status !== "paused") return undefined;
       if (core.isLatecomer()) return undefined; // core contract: canParkExit() is false, the state stays as the core set it
-      const children = childCount(ctx);
-      if (children === null) return hold("children-unknown");
-      if (children !== 0) return hold("children-running");
-      if (ctx?.isIdle?.() !== true) return hold("busy");
+      // Hold in park-wait (not stay in park-exit): T7 only arms its resume timer for park-wait, so a session that never
+      // settles still resumes in place at reset. The next settle / the grace timer re-attempts.
+      if (drained) return hold("awaiting-settle");
+      if (!gateOpen()) return hold("start-gate");
+      const background = busyReason(ctx);
+      if (background) return hold(background);
+      if (ctx?.isIdle?.() !== true || ctx?.hasPendingMessages?.() === true) return hold("busy");
       const sid = core.sessionId;
       const cwd = String(ctx?.cwd ?? ctx?.sessionManager?.getCwd?.() ?? process.cwd());
       let terminal = detectTerminal(env);
@@ -178,6 +229,8 @@ export function install(core) {
         terminal = { kind: "self" };
       } else if (!daemonFresh({ env, homeDir: core.homeDir, now: core.now(), fs })) {
         return hold("health-daemon-not-fresh");
+      } else if (!daemonSupportsParkResume({ env, homeDir: core.homeDir, fs })) {
+        return hold("health-daemon-no-park-resume");
       }
 
       let createdAt = core.now();
@@ -345,9 +398,12 @@ export function install(core) {
   }
 
   core.pi.events?.on?.("wake_source_state", (data) => {
-    if (typeof data?.source !== "string" || !Number.isFinite(data.activeCount)) return undefined;
-    wake.set(data.source, Math.max(0, data.activeCount));
-    return CHILD_WAKE_SOURCES.has(data.source) ? attempt(core.lastCtx) : undefined;
+    if (typeof data?.source !== "string" || data.source.length === 0) return undefined;
+    const previous = wake.get(data.source);
+    const count = Number.isFinite(data.activeCount) ? Math.max(0, data.activeCount) : null;
+    wake.set(data.source, count);
+    if (count === 0 && previous !== undefined && previous !== 0) drained = true;
+    return attempt(core.lastCtx);
   });
 
   core.pi.on("tool_call", (event) => {
@@ -359,6 +415,9 @@ export function install(core) {
   core.onSessionReset(() => {
     releaseOwnClaim();
     wake.clear();
+    startGate = null;
+    drained = false;
+    core.timers.clear(GATE_TIMER);
     spawnSeen = false;
     busy = null;
     exited = null;
@@ -377,8 +436,16 @@ export function install(core) {
   core.onBoundary(async (ctx, kind) => {
     if (exited) return;
     if (kind === "session_start") {
+      startGate = { settled: false, readyAt: core.now() + startGraceMs };
+      drained = false;
       await onSessionStart(ctx);
       if (exited) return;
+    } else {
+      if (startGate && !startGate.settled && (kind === "turn_end" || kind === "agent_settled")) {
+        startGate.settled = true;
+        if (!gateOpen() && wantsExit()) core.timers.set(GATE_TIMER, Math.max(0, startGate.readyAt - core.now()), (c) => attempt(c));
+      }
+      if (kind === "agent_settled") drained = false;
     }
     await attempt(ctx);
   });

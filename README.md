@@ -47,7 +47,26 @@ Then type `/reload` in a running omo session.
 The exit-and-relaunch path writes a park record under `~/.omo-health/parks`.
 omo-health reads it at reset and relaunches the session in Orca or herdr.
 
+It never exits while background work is running. These hold the exit:
+
+- running subagents and DAG nodes
+- background eval cells
+- background shell sessions
+- monitors
+- a pending ask-user question
+- a loop-guard hard stop
+- a waiting omo-desk board
+- any other source whose count it can't read
+
+It waits in place and exits only after all of them are done and the session has handled the
+finish notice (the next agent_settled). A reload never forces the exit: after a reload it waits
+until the session has settled once and a short grace has passed, so work that survived the
+reload is counted first. While it waits (and if the session never settles) it stays in the normal
+wait and resumes in place at reset.
+
 If the terminal is Orca or herdr but no fresh omo-health daemon is running, it doesn't exit.
+Relaunch in Orca or herdr also needs an omo-health version that supports park resume (its
+`daemon.json` lists the `park-resume` capability); otherwise the session waits in place.
 The session stays parked where it is and resumes in place at reset.
 
 ## Self-launch fallback

@@ -28,20 +28,25 @@ function proc({ util = 95, now = T0, homeDir, env = ORCA, branch = PRIOR_TURN, g
   pid = 1001, alive = new Set([1001, 1002]), selfLaunch, usage, startOf = (p) => startTime(p), extra = {} } = {}) {
   const h = createHarness({ model: CLAUDE, branch, goal, now, homeDir, env });
   h.writeHomeJson(".omo/agent/auth.json", { "anthropic-subscription": { access: "not-a-real-token" } });
-  if (daemon === "fresh") h.writeHomeJson(".omo-health/daemon.json", { ts: now - 5000, pid: 77 });
+  if (daemon === "fresh") h.writeHomeJson(".omo-health/daemon.json", { ts: now - 5000, pid: 77, capabilities: ["park-resume"] });
+  if (daemon === "fresh-no-capability") h.writeHomeJson(".omo-health/daemon.json", { ts: now - 5000, pid: 77 }); // released omo-health 0.5.0
+  if (daemon === "fresh-other-capability") h.writeHomeJson(".omo-health/daemon.json", { ts: now - 5000, pid: 77, capabilities: ["other"] });
   if (daemon === "stale") h.writeHomeJson(".omo-health/daemon.json", { ts: now - 46000, pid: 77 });
   const goalAtShutdown = [];
   h.ctx.shutdown = () => { h.shutdownCalls.push(true); goalAtShutdown.push(h.goalStore.goal?.status ?? null); };
   const reader = async () => (usage ? usage() : snap(typeof util === "function" ? util() : util));
   const core = startLimitless(h.pi, h.deps({ readUsage: reader, pid, isPidAlive: (p) => alive.has(p), selfLaunch,
-    processStartTime: startOf, resolveLauncher: async () => ({ exe: "omo", args: [] }), ...extra }));
+    processStartTime: startOf, resolveLauncher: async () => ({ exe: "omo", args: [] }), parkExitStartGraceMs: 0, ...extra }));
   const dir = parksDir({}, h.tmpHome);
   const records = () => (existsSync(dir) ? readdirSync(dir).filter((f) => f.endsWith(".park.json")).sort() : []);
   const listing = () => (existsSync(dir) ? readdirSync(dir).sort() : []);
   const read = (name) => JSON.parse(readFileSync(join(dir, name), "utf8"));
-  const start = () => h.fire("session_start", { type: "session_start", reason: "startup" });
+  // A session_start opens the exit gate only after the session settled once (and the grace passed); grace is 0 here.
+  const startOnly = (reason = "startup") => h.fire("session_start", { type: "session_start", reason });
+  const settle = () => h.fire("agent_settled", { type: "agent_settled" });
+  const start = async () => { await startOnly(); await settle(); };
   const wake = (activeCount, source = "senpi-task") => h.pi.events.emit("wake_source_state", { source, activeCount, channels: [] });
-  return { h, core, dir, records, listing, read, start, wake, goalAtShutdown };
+  return { h, core, dir, records, listing, read, start, startOnly, settle, wake, goalAtShutdown };
 }
 
 // Fake OS process creation time per pid (the real probe asks PowerShell / ps).
@@ -138,14 +143,309 @@ test("shutdown waits for children: wake count 1 holds park-wait, drain to 0 writ
     assert.equal(p.core.state.parkState, "park-wait");
     assert.equal(p.core.canWarm(), false);
     assert.equal(p.core.state.parkExit.holdReason, "children-running");
-    await p.wake(1, "terminal-monitor"); // not a child source: no effect
-    assert.equal(p.records().length, 0);
     await p.wake(0);
+    assert.equal(p.records().length, 0, "the exit waits for the next agent_settled");
+    await p.settle();
     assert.equal(p.records().length, 1);
     assert.equal(p.h.shutdownCalls.length, 1);
     await p.wake(0);
     await p.h.runTurn();
     assert.equal(p.h.shutdownCalls.length, 1);
+  } finally { p.h.cleanup(); }
+});
+
+// F3d: a detached eval cell (source "senpi-codemode"), a background bash session and a monitor are all killed by
+// an exit, so each one holds it exactly like a child task.
+for (const source of ["senpi-codemode", "terminal-background-sessions", "terminal-monitors", "senpi-task-member", "some-future-source"]) {
+  test(`${source} running holds park-exit (park-wait, holdReason names it, no record, no shutdown); count 0 exits`, async () => {
+    const p = proc();
+    try {
+      await p.wake(1, source);
+      await p.start();
+      assert.equal(p.records().length, 0);
+      assert.equal(p.h.shutdownCalls.length, 0);
+      assert.equal(p.core.state.parkState, "park-wait");
+      assert.equal(p.core.state.warm.on, false);
+      assert.equal(p.core.state.parkExit.holdReason, `background-running:${source}`);
+      // Later boundaries and ticks re-attempt and keep holding while the count stays above zero.
+      await p.h.runTurn();
+      await p.h.clock.tick(20000); // still inside the daemon freshness window
+      assert.equal(p.records().length, 0);
+      assert.equal(p.h.shutdownCalls.length, 0);
+      assert.equal(p.core.state.parkExit.holdReason, `background-running:${source}`);
+      await p.wake(0, source);
+      await p.settle();
+      assert.equal(p.records().length, 1);
+      assert.equal(p.h.shutdownCalls.length, 1);
+    } finally { p.h.cleanup(); }
+  });
+}
+
+test("two background sources: draining one still holds, the second drain exits", async () => {
+  const p = proc();
+  try {
+    await p.wake(1, "senpi-codemode");
+    await p.wake(1, "terminal-background-sessions");
+    await p.start();
+    assert.equal(p.core.state.parkExit.holdReason, "background-running:senpi-codemode");
+    await p.wake(0, "senpi-codemode");
+    await p.settle();
+    assert.equal(p.core.state.parkExit.holdReason, "background-running:terminal-background-sessions");
+    assert.equal(p.h.shutdownCalls.length, 0);
+    assert.equal(p.records().length, 0);
+    await p.wake(0, "terminal-background-sessions");
+    await p.settle();
+    assert.equal(p.h.shutdownCalls.length, 1);
+    assert.equal(p.records().length, 1);
+  } finally { p.h.cleanup(); }
+});
+
+test("a cell that starts after the hold began keeps the session from exiting at the next boundary", async () => {
+  const p = proc({ daemon: "stale" });
+  try {
+    await p.start();
+    assert.equal(p.core.state.parkExit.holdReason, "health-daemon-not-fresh");
+    p.h.writeHomeJson(".omo-health/daemon.json", { ts: T0 - 1000, pid: 77, capabilities: ["park-resume"] });
+    await p.wake(1, "senpi-codemode"); // daemon is healthy now, but a detached cell is running
+    await p.h.runTurn();
+    assert.equal(p.h.shutdownCalls.length, 0);
+    assert.equal(p.core.state.parkExit.holdReason, "background-running:senpi-codemode");
+    await p.wake(0, "senpi-codemode");
+    await p.settle();
+    assert.equal(p.h.shutdownCalls.length, 1);
+  } finally { p.h.cleanup(); }
+});
+
+test("an unreadable wake count is unknown, not zero: any source holds until it reports a readable 0", async () => {
+  for (const bad of ["x", undefined, NaN, null]) {
+    const q = proc();
+    try {
+      q.h.pi.events.emit("wake_source_state", { source: "senpi-codemode", activeCount: bad });
+      await q.start();
+      assert.equal(q.records().length, 0, `activeCount ${String(bad)}`);
+      assert.equal(q.h.shutdownCalls.length, 0);
+      assert.equal(q.core.state.parkState, "park-wait");
+      assert.equal(q.core.state.parkExit.holdReason, "background-unknown:senpi-codemode");
+      await q.wake(0, "senpi-codemode");
+      await q.settle();
+      assert.equal(q.h.shutdownCalls.length, 1);
+    } finally { q.h.cleanup(); }
+  }
+});
+
+// N3: limitless loads before the terminal/ask-user/loop-guard/codemode emitters, so after a reload its wake map is empty
+// until they re-publish. No exit is attempted until the session settled once AND the grace passed.
+const GRACE = 5000;
+async function heldThenReload() {
+  const a = proc();
+  await a.wake(1, "terminal-background-sessions");
+  await a.start();
+  assert.equal(a.core.state.parkExit.holdReason, "background-running:terminal-background-sessions");
+  const b = proc({ homeDir: a.h.tmpHome, goal: a.h.goalStore.goal, extra: { parkExitStartGraceMs: GRACE } });
+  return { a, b };
+}
+
+test("N3: reload with a background session alive - no exit until settle + grace, a re-published count keeps holding, then one exit at count 0", async () => {
+  const { a, b } = await heldThenReload();
+  try {
+    await b.startOnly("reload");
+    assert.equal(b.h.shutdownCalls.length, 0, "empty wake map at session_start must not exit");
+    assert.equal(b.records().length, 0);
+    await b.wake(1, "terminal-background-sessions"); // the emitter re-publishes after limitless
+    assert.equal(b.h.shutdownCalls.length, 0);
+    await b.settle();
+    await b.h.clock.tick(GRACE - 1);
+    assert.equal(b.h.shutdownCalls.length, 0, "settled but grace not over");
+    await b.h.clock.tick(1);
+    assert.equal(b.h.shutdownCalls.length, 0, "gate open, count 1 holds");
+    assert.equal(b.core.state.parkExit.holdReason, "background-running:terminal-background-sessions");
+    assert.equal(b.records().length, 0);
+    await b.wake(0, "terminal-background-sessions");
+    await b.settle();
+    assert.equal(b.h.shutdownCalls.length, 1);
+    assert.equal(b.records().length, 1);
+    await b.settle();
+    await b.h.clock.tick(60000);
+    assert.equal(b.h.shutdownCalls.length, 1, "exactly once");
+  } finally { b.h.cleanup(); }
+});
+
+test("N3: reload where nothing survived exits once the session settled and the grace passed (grace timer)", async () => {
+  const { b } = await heldThenReload();
+  try {
+    await b.startOnly("reload");
+    await b.settle();
+    await b.h.clock.tick(0); // drain the zero-delay park timers while the gate is still closed: only the grace timer is left
+    assert.equal(b.h.shutdownCalls.length, 0, "settled, grace not over");
+    await b.h.clock.tick(GRACE);
+    assert.equal(b.h.shutdownCalls.length, 1);
+    assert.equal(b.records().length, 1);
+  } finally { b.h.cleanup(); }
+});
+
+test("N3: grace over but the session never settled -> no exit; the first settle exits", async () => {
+  const { b } = await heldThenReload();
+  try {
+    await b.startOnly("reload");
+    await b.h.clock.tick(GRACE * 4);
+    assert.equal(b.h.shutdownCalls.length, 0);
+    assert.equal(b.records().length, 0);
+    await b.settle();
+    assert.equal(b.h.shutdownCalls.length, 1);
+  } finally { b.h.cleanup(); }
+});
+
+// (6) a count drop must not exit before the completion notice run is delivered and saved.
+test("count drop to 0: no exit before agent_settled (turn_end and time do not count); after it exactly one exit", async () => {
+  const p = proc();
+  try {
+    await p.wake(1, "senpi-codemode");
+    await p.start();
+    await p.wake(0, "senpi-codemode");
+    assert.equal(p.h.shutdownCalls.length, 0);
+    await p.h.fire("turn_end", { type: "turn_end", turnIndex: 0, message: { role: "assistant", content: [] }, toolResults: [] });
+    await p.h.clock.tick(20000);
+    assert.equal(p.h.shutdownCalls.length, 0);
+    assert.equal(p.records().length, 0);
+    await p.settle();
+    assert.equal(p.h.shutdownCalls.length, 1);
+    assert.equal(p.records().length, 1);
+    await p.settle();
+    await p.wake(0, "senpi-codemode");
+    assert.equal(p.h.shutdownCalls.length, 1);
+  } finally { p.h.cleanup(); }
+});
+
+test("count drop to 0 with a queued message (the completion notice) still pending at agent_settled -> held busy, exits after it is delivered", async () => {
+  const p = proc();
+  try {
+    await p.wake(1, "senpi-codemode");
+    await p.start();
+    await p.wake(0, "senpi-codemode");
+    p.h.setPendingMessages(true);
+    await p.settle();
+    assert.equal(p.h.shutdownCalls.length, 0);
+    assert.equal(p.core.state.parkExit.holdReason, "busy");
+    p.h.setPendingMessages(false);
+    await p.settle();
+    assert.equal(p.h.shutdownCalls.length, 1);
+  } finally { p.h.cleanup(); }
+});
+
+test("count drops then another source starts before the settle -> still held at the settle", async () => {
+  const p = proc();
+  try {
+    await p.wake(1, "senpi-codemode");
+    await p.start();
+    await p.wake(0, "senpi-codemode");
+    await p.wake(1, "terminal-monitors");
+    await p.settle();
+    assert.equal(p.h.shutdownCalls.length, 0);
+    assert.equal(p.core.state.parkExit.holdReason, "background-running:terminal-monitors");
+  } finally { p.h.cleanup(); }
+});
+
+// F1: a closed gate / a pending deferral must hold in park-wait (T7 only arms its resume timer for park-wait), never sit in park-exit.
+test("F1: fresh start over the limit, no turn ever -> park-wait 'start-gate', T7 armed, resumes in place at reset with the goal active", async () => {
+  let util = 95;
+  const p = proc({ util: () => util, extra: { parkExitStartGraceMs: GRACE } });
+  try {
+    await p.startOnly();
+    assert.equal(p.core.state.parkState, "park-wait");
+    assert.equal(p.core.state.parkExit.holdReason, "start-gate");
+    assert.equal(p.core.state.warm.on, false);
+    assert.equal(p.core.timers.has("resume"), true, "T7 resume timer armed");
+    assert.equal(p.records().length, 0);
+    assert.equal(p.h.shutdownCalls.length, 0);
+    await p.h.clock.tick(GRACE * 4); // grace over, still no settle
+    assert.equal(p.core.state.parkState, "park-wait");
+    util = 10;
+    await p.h.clock.tick(RESET - T0 + 60000);
+    assert.equal(p.core.isParked(), false);
+    assert.equal(p.h.goalStore.goal.status, "active");
+    assert.equal(p.h.shutdownCalls.length, 0);
+    assert.equal(p.records().length, 0);
+  } finally { p.h.cleanup(); }
+});
+
+test("F1: the start-gate hold exits normally once the session settles after the grace", async () => {
+  const p = proc({ extra: { parkExitStartGraceMs: GRACE } });
+  try {
+    await p.startOnly();
+    assert.equal(p.core.state.parkExit.holdReason, "start-gate");
+    await p.settle();
+    await p.h.clock.tick(0);
+    assert.equal(p.h.shutdownCalls.length, 0, "settled, grace not over");
+    await p.h.clock.tick(GRACE);
+    assert.equal(p.h.shutdownCalls.length, 1);
+    assert.equal(p.records().length, 1);
+  } finally { p.h.cleanup(); }
+});
+
+test("F1: a count drop before the first hold with no run after it -> park-wait 'awaiting-settle', T7 armed; the next settle exits once", async () => {
+  const park = async (p) => {
+    p.core.state.decision = { state: "park-exit", window: "five_hour", resetAt: RESET, reason: "five_hour 95%", util: 95, warm: { on: true } };
+    await p.core.park({ state: "park-exit", window: "five_hour", resetAt: RESET, reason: "five_hour 95%", util: 95, warm: { on: true } });
+    await p.h.clock.tick(0);
+  };
+  let util = 10;
+  const p = proc({ util: () => util });
+  try {
+    await p.start();
+    await p.wake(1, "senpi-codemode");
+    await p.wake(0, "senpi-codemode"); // drop while not parked: nothing to attempt yet
+    util = 95; // the poll at the settle keeps agreeing with the park
+    await park(p);
+    assert.equal(p.core.state.parkState, "park-wait");
+    assert.equal(p.core.state.parkExit.holdReason, "awaiting-settle");
+    assert.equal(p.core.timers.has("resume"), true, "T7 resume timer armed");
+    assert.equal(p.h.shutdownCalls.length, 0);
+    assert.equal(p.records().length, 0);
+    await p.settle();
+    assert.equal(p.h.shutdownCalls.length, 1);
+    assert.equal(p.records().length, 1);
+  } finally { p.h.cleanup(); }
+});
+
+test("F1: a count drop with no run ever after it still resumes in place at reset", async () => {
+  let util = 10;
+  const p = proc({ util: () => util });
+  try {
+    await p.start();
+    await p.wake(1, "senpi-codemode");
+    await p.wake(0, "senpi-codemode");
+    p.core.state.decision = { state: "park-exit", window: "five_hour", resetAt: RESET, reason: "five_hour 95%", util: 95, warm: { on: true } };
+    await p.core.park({ state: "park-exit", window: "five_hour", resetAt: RESET, reason: "five_hour 95%", util: 95, warm: { on: true } });
+    await p.h.clock.tick(0);
+    assert.equal(p.core.state.parkState, "park-wait");
+    await p.h.clock.tick(RESET - T0 + 60000);
+    assert.equal(p.core.isParked(), false);
+    assert.equal(p.h.goalStore.goal.status, "active");
+    assert.equal(p.h.shutdownCalls.length, 0);
+  } finally { p.h.cleanup(); }
+});
+
+// The gate/deferral hold sits AFTER the owned-goal and latecomer checks: those states stay exactly as the core set them.
+test("F1: no owned goal with the start gate closed stays park-exit (IS-1), no hold", async () => {
+  const p = proc({ goal: null, extra: { parkExitStartGraceMs: GRACE } });
+  try {
+    await p.startOnly();
+    await p.h.clock.tick(0);
+    assert.equal(p.core.state.parkState, "park-exit");
+    assert.equal(p.core.state.parkExit?.held ?? false, false);
+    assert.equal(p.h.shutdownCalls.length, 0);
+  } finally { p.h.cleanup(); }
+});
+
+test("F1: a latecomer with the start gate closed is not held and never park-exits", async () => {
+  const p = proc({ branch: [], extra: { parkExitStartGraceMs: GRACE } });
+  try {
+    await p.startOnly();
+    await p.h.clock.tick(0);
+    assert.equal(p.core.isLatecomer(), true);
+    assert.equal(p.core.state.parkExit?.held ?? false, false);
+    assert.equal(p.core.state.parkExit?.holdReason ?? null, null);
+    assert.equal(p.h.shutdownCalls.length, 0);
   } finally { p.h.cleanup(); }
 });
 
@@ -191,6 +491,8 @@ test("a spawn call in this process makes the wake count unknown", async () => {
 
 for (const [label, opts] of [
   ["stale daemon.json (ts older than 45 s)", { daemon: "stale" }],
+  ["fresh daemon.json without the park-resume capability (released omo-health)", { daemon: "fresh-no-capability" }],
+  ["fresh daemon.json with only another capability", { daemon: "fresh-other-capability" }],
   ["missing daemon.json", { daemon: "none" }],
   ["daemon.json with stoppedMs", { daemon: "none", stopped: true }],
   ["terminal.kind unknown without a self-launcher", { env: {} }],
@@ -211,6 +513,19 @@ for (const [label, opts] of [
     } finally { p.h.cleanup(); }
   });
 }
+
+test("orca/herdr needs daemon.json capabilities to include park-resume: without it the hold names the missing capability, with it the session exits", async () => {
+  const without = proc({ daemon: "fresh-no-capability" });
+  try {
+    await without.start();
+    assert.equal(without.core.state.parkExit.holdReason, "health-daemon-no-park-resume");
+    assert.equal(without.records().length, 0);
+    assert.equal(without.h.shutdownCalls.length, 0);
+    without.h.writeHomeJson(".omo-health/daemon.json", { ts: T0 - 1000, pid: 77, capabilities: ["park-resume"] });
+    await without.h.runTurn();
+    assert.equal(without.h.shutdownCalls.length, 1);
+  } finally { without.h.cleanup(); }
+});
 
 test("held park-wait resumes through todo 7 at reset (no stranding)", async () => {
   let util = 95;
@@ -618,6 +933,7 @@ test("E1 replacement: active replacement goal is paused by core and park-exits",
     assert.equal(p.h.goalStore.goal.status, "paused");
     assert.equal(p.core.ownedGoalId(), "g2");
     await p.wake(0);
+    await p.settle();
     assert.equal(p.h.goalStore.goal.status, "active");
     assert.equal(p.core.ownedGoalId(), null);
     assert.equal(p.records().length, 1);
