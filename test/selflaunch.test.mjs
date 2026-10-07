@@ -5,7 +5,7 @@ import { mkdtempSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
-  findOnPath, REGISTER_SCRIPT, UNREGISTER_SCRIPT, createSelfLaunch, isoLocal, selfTaskOf, taskName,
+  findOnPath, resolveLauncher, validLauncher, REGISTER_SCRIPT, UNREGISTER_SCRIPT, createSelfLaunch, isoLocal, selfTaskOf, taskName,
 } from "../extension/selflaunch.mjs";
 
 const SID = "0198a1b2-c3d4-7e5f-8a9b-0c1d2e3f4a5b";
@@ -34,11 +34,11 @@ test("wt.exe case: exact static script, values only in env, selfTask returned", 
   assert.match(REGISTER_SCRIPT, /Register-ScheduledTask -TaskName \$name -TaskPath '\\omo-limitless\\' -Trigger \$trigger -Action \$action -Settings \$settings -Force/);
   assert.match(REGISTER_SCRIPT, /New-ScheduledTaskTrigger -Once -At \$at/);
   assert.match(REGISTER_SCRIPT, /New-ScheduledTaskSettingsSet -StartWhenAvailable/);
-  assert.match(REGISTER_SCRIPT, /@\('-d', \(\$q \+ \$env:OMO_LL_CWD \+ \$q\), 'omo', '--session', \$env:OMO_LL_SID\)/);
+  assert.match(REGISTER_SCRIPT, /@\('-d', \(\$q \+ \$env:OMO_LL_CWD \+ \$q\)\) \+ \$l \+ @\('--session', \$env:OMO_LL_SID\)/);
   assert.doesNotMatch(REGISTER_SCRIPT, /-RunLevel|-Principal|-User|-Daily|-Weekly|-Repetition|"/);
   assert.deepEqual(calls[0].env, {
     OMO_LL_TASK: taskName(SID), OMO_LL_SID: SID, OMO_LL_CWD: tmp, OMO_LL_EXE: "C:\\Users\\u\\AppData\\Local\\Microsoft\\WindowsApps\\wt.exe",
-    OMO_LL_KIND: "wt", OMO_LL_AT: isoLocal(AT),
+    OMO_LL_KIND: "wt", OMO_LL_LAUNCH: "omo", OMO_LL_AT: isoLocal(AT),
   });
 });
 
@@ -47,7 +47,7 @@ test("cmd.exe case when wt.exe is absent", async () => {
   assert.equal((await sl.register({ sessionId: SID, cwd: tmp, at: AT })).ok, true);
   assert.equal(calls[0].env.OMO_LL_KIND, "cmd");
   assert.equal(calls[0].env.OMO_LL_EXE, "C:\\Windows\\System32\\cmd.exe");
-  assert.match(REGISTER_SCRIPT, /@\('\/c', 'start', \(\$q \+ 'limitless' \+ \$q\), '\/D', \(\$q \+ \$env:OMO_LL_CWD \+ \$q\), 'omo', '--session', \$env:OMO_LL_SID\)/);
+  assert.match(REGISTER_SCRIPT, /@\('\/c', 'start', \(\$q \+ 'limitless' \+ \$q\), '\/D', \(\$q \+ \$env:OMO_LL_CWD \+ \$q\)\) \+ \$l \+ @\('--session', \$env:OMO_LL_SID\)/);
 });
 
 test("cwd with ';' never reaches wt.exe: cmd.exe action even though wt.exe exists", async () => {
@@ -138,4 +138,74 @@ test("unregister: static script, own task only, not-found is fine, failure repor
   const other = make();
   await assert.rejects(() => other.sl.unregister({ sessionId: SID, selfTask: "\\omo-limitless\\someone-else" }), /self-launch/);
   assert.equal(other.calls.length, 0);
+});
+
+// Launcher resolution -------------------------------------------------------------------------------------------
+const BUN = join(tmp, "bun.exe");
+const OMO_JS = join(tmp, "omo.js");
+const NEW_OMO = join(tmp, "bunbin", "omo.exe");
+const OLD_OMO = join(tmp, "local", "omo.exe");
+for (const f of [BUN, OMO_JS, NEW_OMO, OLD_OMO]) { mkdirSync(join(f, ".."), { recursive: true }); writeFileSync(f, ""); }
+const rl = (o) => resolveLauncher({ fs: nodeFs, platform: "win32", env: {}, execPath: BUN, probe: async () => [], ...o });
+
+test("resolveLauncher step 1: nearest ancestor omo launcher wins over OMO_BIN", async () => {
+  assert.deepEqual(await rl({ env: { OMO_BIN: OMO_JS }, probe: async () => [BUN, NEW_OMO, OLD_OMO] }), { exe: NEW_OMO, args: [] });
+});
+
+test("resolveLauncher step 2: OMO_BIN run by the bun/node executable", async () => {
+  assert.deepEqual(await rl({ env: { OMO_BIN: OMO_JS }, probe: async () => [BUN, join(tmp, "cmd.exe")] }), { exe: BUN, args: [OMO_JS] });
+  assert.deepEqual(await rl({ env: { OMO_BIN: OMO_JS }, probe: async () => { throw new Error("probe died"); } }), { exe: BUN, args: [OMO_JS] });
+});
+
+test("resolveLauncher step 3: bare omo when nothing usable", async () => {
+  const bare = { exe: "omo", args: [] };
+  assert.deepEqual(await rl({}), bare);
+  assert.deepEqual(await rl({ env: { OMO_BIN: join(tmp, "missing.js") } }), bare);
+  assert.deepEqual(await rl({ env: { OMO_BIN: OMO_JS }, execPath: join(tmp, "other.exe") }), bare);
+  assert.deepEqual(await rl({ probe: async () => [join(tmp, "nowhere", "omo.exe")] }), bare);
+});
+
+test("validLauncher rejects relative, missing and metacharacter paths", () => {
+  assert.equal(validLauncher({ exe: "omo.exe", args: [] }, nodeFs), null);
+  assert.equal(validLauncher({ exe: join(tmp, "nope.exe"), args: [] }, nodeFs), null);
+  assert.equal(validLauncher({ exe: BUN, args: ["x & calc"] }, nodeFs), null);
+  assert.equal(validLauncher({ exe: BUN, args: ["relative.js"] }, nodeFs), null);
+  assert.deepEqual(validLauncher({ exe: BUN, args: [OMO_JS] }, nodeFs), { exe: BUN, args: [OMO_JS] });
+});
+
+test("register passes the launcher through env: wt.exe and cmd.exe scheduled-task inputs", async () => {
+  const launcher = { exe: BUN, args: [OMO_JS] };
+  const wt = make();
+  await wt.sl.register({ sessionId: SID, cwd: tmp, at: AT, launcher });
+  assert.equal(wt.calls[0].env.OMO_LL_KIND, "wt");
+  assert.equal(wt.calls[0].env.OMO_LL_LAUNCH, [BUN, OMO_JS].join("\n"));
+  assert.equal(wt.calls[0].script, REGISTER_SCRIPT);
+  const cmd = make({ wt: null });
+  await cmd.sl.register({ sessionId: SID, cwd: tmp, at: AT, launcher });
+  assert.equal(cmd.calls[0].env.OMO_LL_KIND, "cmd");
+  assert.equal(cmd.calls[0].env.OMO_LL_LAUNCH, [BUN, OMO_JS].join("\n"));
+  const semi = join(tmp, "se;mi");
+  mkdirSync(semi, { recursive: true });
+  const semiExe = join(semi, "omo.exe");
+  writeFileSync(semiExe, "");
+  const viaExe = make();
+  await viaExe.sl.register({ sessionId: SID, cwd: tmp, at: AT, launcher: { exe: semiExe, args: [] } });
+  assert.equal(viaExe.calls[0].env.OMO_LL_KIND, "cmd");
+  const bad = make();
+  await bad.sl.register({ sessionId: SID, cwd: tmp, at: AT, launcher: { exe: "C:\\x & calc.exe", args: [] } });
+  assert.equal(bad.calls[0].env.OMO_LL_LAUNCH, "omo");
+});
+
+test("the static script builds the exact action argument for both branches (PowerShell evaluation)", { skip: process.platform !== "win32" }, async () => {
+  const { execFileSync } = await import("node:child_process");
+  const body = REGISTER_SCRIPT.split("\n").filter((l) => /^\$q =|^\$l =|^if \(\$env:OMO_LL_KIND|^else \{ \$argv/.test(l)).join("\n");
+  for (const [kind, want] of [
+    ["wt", `-d "C:\\w" "${BUN}" "${OMO_JS}" --session S1`],
+    ["cmd", `/c start "limitless" /D "C:\\w" "${BUN}" "${OMO_JS}" --session S1`],
+  ]) {
+    const out = execFileSync("powershell.exe", ["-NoProfile", "-NonInteractive", "-Command", body + "\n[Console]::Out.Write($argv -join ' ')"], {
+      env: { ...process.env, OMO_LL_KIND: kind, OMO_LL_CWD: "C:\\w", OMO_LL_SID: "S1", OMO_LL_LAUNCH: [BUN, OMO_JS].join("\n") }, encoding: "utf8",
+    });
+    assert.equal(out, want);
+  }
 });

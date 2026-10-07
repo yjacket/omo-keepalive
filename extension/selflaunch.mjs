@@ -18,7 +18,7 @@
 // register THROWS on invalid input before any PowerShell call (park-exit treats a throw as "stay park-wait").
 import { spawn } from "node:child_process";
 import * as nodeFs from "node:fs";
-import { delimiter, isAbsolute, join } from "node:path";
+import { basename, delimiter, isAbsolute, join, normalize } from "node:path";
 
 export const TASK_PATH = "\\omo-limitless\\";
 export const SID_RE = /^[A-Za-z0-9][A-Za-z0-9-]{7,79}$/; // omo-health/src/act/terminal.mjs:24
@@ -40,8 +40,9 @@ export const REGISTER_SCRIPT = [
   "$q = [string][char]34",
   "$name = $env:OMO_LL_TASK",
   "$at = [datetime]::ParseExact($env:OMO_LL_AT, 'yyyy-MM-ddTHH:mm:ss', [cultureinfo]::InvariantCulture)",
-  "if ($env:OMO_LL_KIND -eq 'wt') { $argv = @('-d', ($q + $env:OMO_LL_CWD + $q), 'omo', '--session', $env:OMO_LL_SID) }",
-  "else { $argv = @('/c', 'start', ($q + 'limitless' + $q), '/D', ($q + $env:OMO_LL_CWD + $q), 'omo', '--session', $env:OMO_LL_SID) }",
+  "$l = @($env:OMO_LL_LAUNCH.Split([char]10) | ForEach-Object { $q + $_ + $q })",
+  "if ($env:OMO_LL_KIND -eq 'wt') { $argv = @('-d', ($q + $env:OMO_LL_CWD + $q)) + $l + @('--session', $env:OMO_LL_SID) }",
+  "else { $argv = @('/c', 'start', ($q + 'limitless' + $q), '/D', ($q + $env:OMO_LL_CWD + $q)) + $l + @('--session', $env:OMO_LL_SID) }",
   "$trigger = New-ScheduledTaskTrigger -Once -At $at",
   "$action = New-ScheduledTaskAction -Execute $env:OMO_LL_EXE -Argument ($argv -join ' ')",
   "$settings = New-ScheduledTaskSettingsSet -StartWhenAvailable",
@@ -85,6 +86,72 @@ export function powershellRunner({ timeoutMs = POWERSHELL_TIMEOUT_MS, env = proc
   });
 }
 
+// Launcher of the running session. {exe, args}: exe is "omo" (PATH lookup) or an absolute existing file without
+// shell metacharacters; args are metacharacter-free strings (the first, when present, an existing absolute file).
+export const FALLBACK_LAUNCHER = Object.freeze({ exe: "omo", args: Object.freeze([]) });
+// eslint-disable-next-line no-control-regex
+const UNSAFE_RE = /["%&|<>^`$!\u0000-\u001f]/;
+const OMO_LAUNCHER_RE = /^omo(\.exe|\.cmd)?$/i;
+const RUNTIME_RE = /^(bun|node)(\.exe)?$/i;
+
+const isFile = (p, fs) => { try { return Boolean(fs.statSync(p)?.isFile?.()); } catch { return false; } };
+
+export function validLauncher(launcher, fs = nodeFs) {
+  const exe = launcher?.exe;
+  const args = launcher?.args ?? [];
+  if (typeof exe !== "string" || !Array.isArray(args)) return null;
+  if (exe === "omo" && args.length === 0) return { exe, args: [] };
+  if (UNSAFE_RE.test(exe) || !isAbsolute(exe) || !isFile(exe, fs)) return null;
+  for (const [i, arg] of args.entries()) {
+    if (typeof arg !== "string" || arg === "" || UNSAFE_RE.test(arg)) return null;
+    if (i === 0 && (!isAbsolute(arg) || !isFile(arg, fs))) return null;
+  }
+  return { exe: normalize(exe), args: args.map((a, i) => (i === 0 ? normalize(a) : a)) };
+}
+
+// Static script; the pid arrives through the environment. Prints the executable path of each ancestor, nearest first.
+export const ANCESTOR_SCRIPT = [
+  "$ErrorActionPreference = 'SilentlyContinue'",
+  "$ProgressPreference = 'SilentlyContinue'",
+  "$byId = @{}",
+  "Get-CimInstance Win32_Process -Property ProcessId, ParentProcessId, ExecutablePath | ForEach-Object { $byId[[int]$_.ProcessId] = $_ }",
+  "$p = [int]$env:OMO_LL_PID",
+  "for ($i = 0; $i -lt 8; $i++) {",
+  "  $c = $byId[$p]",
+  "  if (-not $c) { break }",
+  "  $p = [int]$c.ParentProcessId",
+  "  $a = $byId[$p]",
+  "  if (-not $a) { break }",
+  "  if ($a.ExecutablePath) { Write-Output $a.ExecutablePath }",
+  "}",
+].join("\n");
+
+export async function probeAncestors({ pid = process.pid, env = process.env, timeoutMs = 15_000 } = {}) {
+  const result = await powershellRunner({ timeoutMs, env })({ script: ANCESTOR_SCRIPT, env: { OMO_LL_PID: String(pid) } });
+  if (result?.code !== 0 || result.timedOut) return [];
+  return String(result.stdout).split(/\r?\n/).map((l) => l.trim()).filter(Boolean);
+}
+
+// Order: (1) nearest ancestor process that is an omo launcher (omo.exe / omo.cmd), (2) OMO_BIN run by the current
+// bun/node executable, (3) bare "omo". Never throws.
+export async function resolveLauncher({ env = process.env, execPath = process.execPath, fs = nodeFs, platform = process.platform,
+  pid = process.pid, probe = probeAncestors } = {}) {
+  if (platform === "win32") {
+    try {
+      for (const exe of (await probe({ pid, env })) ?? []) {
+        if (!OMO_LAUNCHER_RE.test(basename(String(exe)))) continue;
+        const launcher = validLauncher({ exe, args: [] }, fs);
+        if (launcher) return launcher;
+      }
+    } catch {}
+  }
+  if (env.OMO_BIN && RUNTIME_RE.test(basename(String(execPath ?? "")))) {
+    const launcher = validLauncher({ exe: execPath, args: [env.OMO_BIN] }, fs);
+    if (launcher) return launcher;
+  }
+  return { exe: "omo", args: [] };
+}
+
 // lstat, not exists/stat: the WindowsApps wt.exe is an app-execution-alias reparse point that stat() rejects with EACCES.
 export function findOnPath(name, { env, fs }) {
   const dirs = [join(env.LOCALAPPDATA ?? "", "Microsoft", "WindowsApps"), ...String(env.PATH ?? env.Path ?? "").split(delimiter)];
@@ -123,13 +190,14 @@ export function createSelfLaunch(deps = {}) {
   const run = deps.runPowerShell ?? powershellRunner({ env });
   const findExe = deps.findExe ?? ((name) => findOnPath(name, { env, fs }));
 
-  async function register({ sessionId, cwd, at } = {}) {
+  async function register({ sessionId, cwd, at, launcher } = {}) {
     const sid = validateSid(sessionId);
     const dir = validateCwd(cwd, fs);
     if (!Number.isFinite(at)) throw new Error("self-launch: invalid trigger time");
     if (platform !== "win32") return { ok: false, reason: "not-windows" };
     // Windows Terminal splits its command line at ';' even inside quotes: such a cwd must only reach cmd.exe.
-    const wt = dir.includes(";") ? null : findExe("wt.exe");
+    const launch = validLauncher(launcher, fs) ?? { exe: "omo", args: [] };
+    const wt = dir.includes(";") || launch.exe.includes(";") ? null : findExe("wt.exe");
     const kind = wt ? "wt" : "cmd";
     const exe = wt ?? env.ComSpec ?? "cmd.exe";
     const selfTask = selfTaskOf(sid);
@@ -137,6 +205,7 @@ export function createSelfLaunch(deps = {}) {
       script: REGISTER_SCRIPT,
       env: {
         OMO_LL_TASK: taskName(sid), OMO_LL_SID: sid, OMO_LL_CWD: dir, OMO_LL_EXE: exe, OMO_LL_KIND: kind,
+        OMO_LL_LAUNCH: [launch.exe, ...launch.args].join("\n"),
         OMO_LL_AT: isoLocal(Math.max(at, now() + MIN_LEAD_MS)),
       },
     });
