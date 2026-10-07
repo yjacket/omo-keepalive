@@ -87,9 +87,10 @@
 //                                            drop its effects instead of acting on the next session's state.
 // core.markExtensionTurn(kind)               mark the current agent run as a goal-race or warm turn (call from
 //                                            before_agent_start). core.blockAllToolsInTurn() -> boolean, core.turn -> {kind}
-// run marking (goalRun)                      every run the user did not start: before_agent_start with trigger
-//                                            "extension" (senpi runner.js:1717 defaults a typed prompt to "prompt"; a
-//                                            triggerTurn custom message passes "extension", agent-session.js:4293), or a
+// run marking (goalRun)                      every run the user did not start (goalRun means "not user-started"):
+//                                            before_agent_start with any trigger other than "prompt" — a typed prompt
+//                                            defaults to "prompt" (runner.js:1717) while "extension" and "delivery" are
+//                                            automatic (agent-session.js:4293) — or a
 //                                            custom-role message_start in a run no user message started (a followUp
 //                                            run has no before_agent_start; the user message precedes the custom
 //                                            messages of a typed prompt, agent-session.js:3770-3790). Cleared by a

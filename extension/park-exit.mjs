@@ -138,12 +138,8 @@ export function install(core) {
   let startGate = null; // {settled, readyAt} from a session_start until it opens; null = open
   let drained = false; // a background count dropped to 0: the exit waits for the next agent_settled (completion notice delivered first)
 
-  const gateOpen = () => {
-    if (!startGate) return true;
-    if (!startGate.settled || core.now() < startGate.readyAt) return false;
-    startGate = null;
-    return true;
-  };
+  // Pure check (no side effect): no gate, or it settled and its grace passed. The state update is explicit at the call sites.
+  const gateOpen = () => !startGate || (startGate.settled && core.now() >= startGate.readyAt);
 
   const dir = () => parksDir(env, core.homeDir);
   const my = () => {
@@ -204,7 +200,13 @@ export function install(core) {
       // Hold in park-wait (not stay in park-exit): T7 only arms its resume timer for park-wait, so a session that never
       // settles still resumes in place at reset. The next settle / the grace timer re-attempts.
       if (drained) return hold("awaiting-settle");
-      if (!gateOpen()) return hold("start-gate");
+      if (!gateOpen()) {
+        // Off-boundary park-exit decision after the first settle: arm the grace timer from the hold (the boundary only
+        // arms it when a settle arrives with the exit already wanted), so the exit is re-attempted at the deadline.
+        if (startGate.settled) core.timers.set(GATE_TIMER, Math.max(0, startGate.readyAt - core.now()), (c) => attempt(c));
+        return hold("start-gate");
+      }
+      startGate = null;
       const background = busyReason(ctx);
       if (background) return hold(background);
       if (ctx?.isIdle?.() !== true || ctx?.hasPendingMessages?.() === true) return hold("busy");
@@ -443,7 +445,8 @@ export function install(core) {
     } else {
       if (startGate && !startGate.settled && (kind === "turn_end" || kind === "agent_settled")) {
         startGate.settled = true;
-        if (!gateOpen() && wantsExit()) core.timers.set(GATE_TIMER, Math.max(0, startGate.readyAt - core.now()), (c) => attempt(c));
+        if (gateOpen()) startGate = null;
+        else if (wantsExit()) core.timers.set(GATE_TIMER, Math.max(0, startGate.readyAt - core.now()), (c) => attempt(c));
       }
       if (kind === "agent_settled") drained = false;
     }

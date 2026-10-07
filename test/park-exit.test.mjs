@@ -382,6 +382,30 @@ test("F1: the start-gate hold exits normally once the session settles after the 
   } finally { p.h.cleanup(); }
 });
 
+// N3: the session settles inside the grace with no exit wanted yet; the park-exit decision then lands off-boundary
+// (a poll transition, no turn boundary). The start-gate hold must arm the grace timer, or the exit waits for a boundary.
+test("N3: an off-boundary park-exit decision inside the grace exits at the grace deadline (gate timer armed from the hold)", async () => {
+  let util = 10;
+  const p = proc({ util: () => util, extra: { parkExitStartGraceMs: GRACE } });
+  try {
+    await p.startOnly();
+    await p.settle(); // settled inside the grace; usage is fine, so no exit is wanted at the settle (no gate timer yet)
+    assert.equal(p.h.shutdownCalls.length, 0);
+    util = 95;
+    // The park-exit decision lands off-boundary (no turn boundary): the transition arms the zero-delay park timer.
+    p.core.state.decision = { state: "park-exit", window: "five_hour", resetAt: RESET, reason: "five_hour 95%", util: 95, warm: { on: true } };
+    await p.core.park({ state: "park-exit", window: "five_hour", resetAt: RESET, reason: "five_hour 95%", util: 95, warm: { on: true } });
+    await p.h.clock.tick(0); // drain the zero-delay park timer while the gate is still closed
+    assert.equal(p.core.state.parkState, "park-wait");
+    assert.equal(p.core.state.parkExit.holdReason, "start-gate");
+    assert.equal(p.h.shutdownCalls.length, 0, "still inside the grace");
+    assert.equal(p.records().length, 0);
+    await p.h.clock.tick(GRACE); // no turn boundary after the decision: only the gate timer armed by the hold can exit
+    assert.equal(p.h.shutdownCalls.length, 1);
+    assert.equal(p.records().length, 1);
+  } finally { p.h.cleanup(); }
+});
+
 test("F1: a count drop before the first hold with no run after it -> park-wait 'awaiting-settle', T7 armed; the next settle exits once", async () => {
   const park = async (p) => {
     p.core.state.decision = { state: "park-exit", window: "five_hour", resetAt: RESET, reason: "five_hour 95%", util: 95, warm: { on: true } };
