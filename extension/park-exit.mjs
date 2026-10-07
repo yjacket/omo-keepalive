@@ -23,7 +23,7 @@ import { execFile } from "node:child_process";
 import * as nodeFs from "node:fs";
 import { join } from "node:path";
 import { SPAWN_TOOLS } from "./core.mjs";
-import { selfLaunch as realSelfLaunch } from "./selflaunch.mjs";
+import { resolveLauncher as realResolveLauncher, selfLaunch as realSelfLaunch } from "./selflaunch.mjs";
 import { readJson, sanitizeId, writeJsonAtomic } from "./state.mjs";
 
 export const DAEMON_STALE_MS = 45_000; // omo-health/extension/sensor.mjs:23,310
@@ -161,11 +161,14 @@ export function install(core) {
       const cwd = String(ctx?.cwd ?? ctx?.sessionManager?.getCwd?.() ?? process.cwd());
       let terminal = detectTerminal(env);
       let selfTask = null;
+      let launcher = null;
       if (terminal.kind === "unknown") {
+        try { launcher = await (core.deps.resolveLauncher ?? realResolveLauncher)({ env, fs }); } catch { launcher = null; }
+        launcher ??= { exe: "omo", args: [] };
         const at = (core.state.resetAt ?? core.now()) + core.config.resumeGraceMs;
         let registered = null;
         try {
-          registered = (await selfLaunch.register({ sessionId: sid, cwd, at })) ?? null;
+          registered = (await selfLaunch.register({ sessionId: sid, cwd, at, launcher })) ?? null;
         } catch (error) {
           core.recordError("park-exit-selflaunch", error);
         }
@@ -185,7 +188,7 @@ export function install(core) {
         window: core.state.window, resetAt: core.state.resetAt, reason: "usage-limit",
         goal: owned ? { id: owned, pausedByLimitless: true } : null,
         status: "pending", createdAt, claim: null, result: null,
-        ...(selfTask ? { selfTask } : {}),
+        ...(selfTask ? { selfTask, launcher } : {}),
         ...(env.OMO_LIMITLESS_QA_COMMAND_PREFIX ? { qaCommandPrefix: env.OMO_LIMITLESS_QA_COMMAND_PREFIX } : {}),
       };
       if (!writeJsonAtomic(join(dir(), recordName(sid, createdAt)), record, fs)) {
@@ -336,7 +339,7 @@ export function install(core) {
     writeOrRecord(join(core.homeDir, ".omo", "limitless", "control", `${sanitizeId(core.sessionId)}.json`), { v: 1, mode: "off" });
     core.state.mode = "off";
     await core.release({ reason: "relaunch-loop" });
-    await core.releaseOwnedGoal({ reason: "relaunch-loop", text: core.texts.resetResume });
+    await core.releaseOwnedGoal({ reason: "relaunch-loop" });
     core.notify(`limitless: 재실행 직후 ${RELAUNCH_REPARK_LIMIT}번 연속 다시 한도에 걸려 이 세션의 한도 대기를 껐습니다. 다시 켜려면 /limitless on`, "warning");
   }
 

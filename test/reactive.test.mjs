@@ -283,7 +283,7 @@ for (const [name, usage, ms] of [
     } finally { h.cleanup(); }
   });
 
-  test("reactive release (" + name + ") sends one followUp when busy", async () => {
+  test("reactive release (" + name + ") queues no message when busy and restarts the goal once at agent_settled", async () => {
     const { h, core } = await parkWithGoal({ readUsage: usage });
     try {
       h.setIdle(false);
@@ -291,8 +291,11 @@ for (const [name, usage, ms] of [
       assert.equal(core.isParked(), false);
       assert.equal(h.goalStore.goal.status, "active");
       assert.equal(goalEmits(h), 0);
-      assert.equal(h.sentUserMessages.length, 1);
-      assert.equal(h.sentUserMessages[0].opts.deliverAs, "followUp");
+      assert.equal(h.sentUserMessages.length, 0);
+      h.setIdle(true);
+      await h.fire("agent_settled", { type: "agent_settled" });
+      // The 6 h cap releases with usage still over: the settle boundary re-parks and pauses the goal again.
+      assert.equal(goalEmits(h), name === "6h cap" ? 0 : 1);
     } finally { h.cleanup(); }
   });
 

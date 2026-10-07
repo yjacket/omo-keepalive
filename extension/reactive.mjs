@@ -68,7 +68,7 @@ export function install(core) {
     core.timers.clear("reactive-check");
     active = false;
     await core.release({ reason });
-    await core.releaseOwnedGoal({ reason, text: core.texts.resetResume });
+    await core.releaseOwnedGoal({ reason });
     if (notify) core.notify("[limitless] 사용량 한도 대기를 해제했습니다. 다음 턴에서 다시 시도합니다.", "info");
   };
   const scheduleCheck = () => {

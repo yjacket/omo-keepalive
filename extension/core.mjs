@@ -55,11 +55,11 @@
 // core.enabled()                             config.enabled && state.mode !== "off" (todo 9 sets state.mode)
 // core.ownedGoalId()                         state.pausedByLimitless
 // core.pauseActiveGoal({notice})             pause the goal only when it is active; records pausedByLimitless;
-//                                            returns the goal id or null. notice=true posts the "goal은 HH:MM ..." notice.
-// core.releaseOwnedGoal({reason, text})      un-pause only if the goal is paused and its id === pausedByLimitless,
+//                                            returns the goal id or null. notice=true posts the "goal은 HH:MM ..." notice (announceGoalHeld).
+// core.releaseOwnedGoal({reason})            un-pause only if the goal is paused and its id === pausedByLimitless,
 //                                            then restart work exactly once: idle -> pi.events.emit(
-//                                            "goal_store_changed", {threadId}); busy -> pi.sendUserMessage(text,
-//                                            {deliverAs:"followUp"}). Returns true when it un-paused. When it
+//                                            "goal_store_changed", {threadId}); busy -> remember it and emit at
+//                                            agent_settled unless a run starts first (the goal extension continues by itself). Returns true when it un-paused. When it
 //                                            returns false it sent nothing and emitted nothing - callers must NOT
 //                                            send a fallback message (plan todo 9 restart-once rule).
 // core.onBeforeSessionStart(fn(event, ctx))  pre-start gate (todo 8's start claim). Runs at session_start after
@@ -90,7 +90,7 @@
 // core.now(), core.hhmm(ms)                  injected clock; HH:MM today, M/D HH:MM on another local day
 // core.setStatus(text|undefined), core.notify(text, level), core.recordError(where, err)
 // core.blockReason()                         "limitless: usage limit <window> <util>% - resumes <HH:MM>"
-// core.texts                                 {resetResume, manualResume, raceNote, goalHeld(hhmm)}
+// core.texts                                 {resetResume, raceNote, goalHeld(hhmm)}
 //
 // deps: {env, homeDir, fs (sync node:fs subset), now, setTimeout, clearTimeout, readUsage, goalStore}
 //   goalStore: {read(ctx) -> goal|null, setStatus(ctx, status) -> goal}; default loads senpi's goal store.
@@ -105,6 +105,7 @@ import { loadState, readSharedSnapshot, saveState, statePath, writeSharedSnapsho
 
 export const STATUS_KEY = "limitless";
 export const SPAWN_TOOLS = new Set(["task", "task_create"]);
+export const GOAL_HELD_NOTICE_TYPE = "limitless-goal-held";
 export const GOAL_CONTINUATION_PREFIX = "Continue working toward the active thread goal.";
 const SUBSCRIPTION = new Set(["anthropic-subscription", "chatgpt-subscription"]);
 const PARKED = new Set(["park-wait", "park-exit"]);
@@ -112,7 +113,6 @@ const MAX_TIMER_MS = 2147483647;
 
 export const TEXTS = {
   resetResume: "[limitless] 사용량 한도가 리셋됐다. 중단 전 작업을 이어가라.",
-  manualResume: "[limitless] 사용량 한도 대기가 풀렸다. 중단 전 작업을 이어가라.",
   raceNote: "사용량 한도 대기 중. 도구를 쓰지 말고 한 줄로 끝내라",
   goalHeld: (hhmm) => hhmm === null
     ? "goal은 리셋 시각을 아직 몰라 한도가 풀리면 시작합니다. 지금 돌리려면 /limitless resume"
@@ -226,6 +226,10 @@ export function createCore(pi, { config, deps = {} } = {}) {
   let lastPollAt = null;
   let holding = null;
   let staleOwnedGoal = false;
+  let holdingNotice = false;
+  // releaseOwnedGoal un-paused the goal while a run was active: emit goal_store_changed at agent_settled unless a run
+  // starts first (then the goal extension's own agent_end continuation owns the restart).
+  let pendingKick = false;
 
   const core = {
     pi, deps, config, env, homeDir,
@@ -333,9 +337,27 @@ export function createCore(pi, { config, deps = {} } = {}) {
     // The one goal-status writer (park-exit re-activates through it too).
     setGoalStatus: (ctx, status) => goalStore.setStatus(ctx, status),
 
+    // The "goal은 HH:MM 리셋 뒤 시작합니다" notice. ui.notify renders through senpi's showStatus, which overwrites the
+    // previous status line when nothing else was added to the chat in between (the /goal command's own notify, a
+    // second limitless notice), so the notice is a persistent display message instead of a transient status line.
+    announceGoalHeld() {
+      const text = TEXTS.goalHeld(knownTime(core.state.resetAt) ? hhmm(core.state.resetAt, now()) : null);
+      try {
+        pi.sendMessage({ customType: GOAL_HELD_NOTICE_TYPE, content: text, display: true });
+      } catch (error) {
+        core.recordError("goal-held-notice", error);
+        core.notify(text, "info");
+      }
+    },
+
     async pauseActiveGoal({ notice = false } = {}) {
-      // Single flight: concurrent callers (goal_store_changed, before_agent_start, tool_call) share one pause.
-      if (holding) return holding;
+      // Single flight: concurrent callers (goal_store_changed, before_agent_start, tool_call) share one pause; a joiner
+      // that wants the notice makes the shared pause post it.
+      if (holding) {
+        holdingNotice ||= notice;
+        return holding;
+      }
+      holdingNotice = notice;
       const run = (async () => {
         const ctx = core.lastCtx;
         const goal = await core.readGoal(ctx);
@@ -348,14 +370,14 @@ export function createCore(pi, { config, deps = {} } = {}) {
         }
         core.state.pausedByLimitless = goal.id;
         core.persist();
-        if (notice) core.notify(TEXTS.goalHeld(knownTime(core.state.resetAt) ? hhmm(core.state.resetAt, now()) : null), "info");
+        if (holdingNotice) core.announceGoalHeld();
         return goal.id;
       })();
       holding = run.finally(() => { holding = null; });
       return holding;
     },
 
-    async releaseOwnedGoal({ reason = "release", text = TEXTS.manualResume } = {}) {
+    async releaseOwnedGoal({ reason = "release" } = {}) {
       const owned = core.state.pausedByLimitless;
       if (!owned) return false;
       const ctx = core.lastCtx;
@@ -375,8 +397,11 @@ export function createCore(pi, { config, deps = {} } = {}) {
       core.state.lastRelease = { at: now(), reason };
       core.persist();
       const idle = ctx?.isIdle?.() === true && ctx?.hasPendingMessages?.() !== true;
+      // Busy: no message is queued. A followUp queued from a turn_end/agent_end handler lands after the agent core's
+      // last queue poll, is never drained, and its pending state also blocks the goal extension's own continuation
+      // (senpi agent-session.js _processAgentEvent / pi-agent-core runWithLifecycle), wedging the session in "Working".
       if (idle) await pi.events?.emit?.("goal_store_changed", { threadId: core.sessionId });
-      else pi.sendUserMessage(text, { deliverAs: "followUp" });
+      else pendingKick = true;
       return true;
     },
 
@@ -405,7 +430,8 @@ export function createCore(pi, { config, deps = {} } = {}) {
       }
       core.setStatus(statusText(s.resetAt, now()));
       core.persist();
-      const pausedNow = core.enabled() ? await core.pauseActiveGoal({ notice: false }) : null;
+      // The episode notice below covers a goal paused on the first park; later pauses (episode notice spent) announce themselves.
+      const pausedNow = core.enabled() ? await core.pauseActiveGoal({ notice: s.episodeNotified }) : null;
       if (!s.episodeNotified) {
         s.episodeNotified = true;
         const when = knownTime(s.resetAt) ? `${hhmm(s.resetAt, now())} 재개.` : "리셋 시각을 아직 몰라 재개 시각 미정.";
@@ -443,7 +469,7 @@ export function createCore(pi, { config, deps = {} } = {}) {
       const decision = await core.poll({ force: true, anySource: true });
       if (decision?.state !== "park-wait" && decision?.state !== "park-exit" && core.isParked()) {
         await core.release({ reason: "reset" });
-        await core.releaseOwnedGoal({ reason: "reset", text: TEXTS.resetResume });
+        await core.releaseOwnedGoal({ reason: "reset" });
       }
       return decision;
     },
@@ -461,7 +487,7 @@ export function createCore(pi, { config, deps = {} } = {}) {
       } else if (decision.state === "ok" && (core.isParked() ? (anySource || core.state.source === "poll") : staleOwnedGoal)) {
         if (core.isParked()) await core.release({ reason: "usage-ok" });
         staleOwnedGoal = false;
-        await core.releaseOwnedGoal({ reason: "usage-ok", text: TEXTS.resetResume });
+        await core.releaseOwnedGoal({ reason: "usage-ok" });
       }
       return decision;
     },
@@ -500,6 +526,10 @@ export function createCore(pi, { config, deps = {} } = {}) {
       core.lastCtx = ctx;
       startSession(ctx);
       await boundary(ctx, "agent_settled");
+      if (pendingKick) {
+        pendingKick = false;
+        if (!core.isParked()) await pi.events?.emit?.("goal_store_changed", { threadId: core.sessionId });
+      }
     },
     async handleAgentEnd(event, ctx) {
       if (vetoed) return;
@@ -509,6 +539,7 @@ export function createCore(pi, { config, deps = {} } = {}) {
     async handleBeforeAgentStart(event, ctx) {
       if (event?.preview === true || vetoed) return undefined;
       core.turn = null;
+      pendingKick = false;
       core.lastCtx = ctx;
       startSession(ctx);
       if (!core.enabled() || !core.isParked()) return undefined;
@@ -615,6 +646,8 @@ export function createCore(pi, { config, deps = {} } = {}) {
     }
     for (const name of [...timerHandles.keys()]) core.timers.clear(name);
     holding = null;
+    holdingNotice = false;
+    pendingKick = false;
     staleOwnedGoal = false;
     lastPollAt = null;
     core.turn = null;
@@ -631,7 +664,7 @@ export function createCore(pi, { config, deps = {} } = {}) {
       const decision = await core.poll();
       if (staleOwnedGoal && decision?.state === "unknown" && !core.isParked()) {
         staleOwnedGoal = false;
-        await core.releaseOwnedGoal({ reason: "stale-park", text: TEXTS.resetResume });
+        await core.releaseOwnedGoal({ reason: "stale-park" });
       }
       if (core.isParked()) await core.pauseActiveGoal({ notice: true });
     }

@@ -34,7 +34,7 @@ function proc({ util = 95, now = T0, homeDir, env = ORCA, branch = PRIOR_TURN, g
   h.ctx.shutdown = () => { h.shutdownCalls.push(true); goalAtShutdown.push(h.goalStore.goal?.status ?? null); };
   const reader = async () => (usage ? usage() : snap(typeof util === "function" ? util() : util));
   const core = startLimitless(h.pi, h.deps({ readUsage: reader, pid, isPidAlive: (p) => alive.has(p), selfLaunch,
-    processStartTime: startOf, ...extra }));
+    processStartTime: startOf, resolveLauncher: async () => ({ exe: "omo", args: [] }), ...extra }));
   const dir = parksDir({}, h.tmpHome);
   const records = () => (existsSync(dir) ? readdirSync(dir).filter((f) => f.endsWith(".park.json")).sort() : []);
   const listing = () => (existsSync(dir) ? readdirSync(dir).sort() : []);
@@ -234,11 +234,23 @@ test("terminal.kind unknown with a registered self-launch -> record kind self + 
   const p = proc({ env: {}, daemon: "none", selfLaunch });
   try {
     await p.start();
-    assert.deepEqual(calls, [{ sessionId: "s1", cwd: p.h.tmpHome, at: RESET + 60000 }]);
+    assert.deepEqual(calls, [{ sessionId: "s1", cwd: p.h.tmpHome, at: RESET + 60000, launcher: { exe: "omo", args: [] } }]);
     const rec = p.read(p.records()[0]);
     assert.deepEqual(rec.terminal, { kind: "self" });
     assert.equal(rec.selfTask, "\\omo-limitless\\omo-limitless-resume-s1");
     assert.equal(p.h.shutdownCalls.length, 1);
+  } finally { p.h.cleanup(); }
+});
+
+test("park record stores the resolved launcher and hands it to the self-launch registration", async () => {
+  const launcher = { exe: "C:\\Users\\u\\.bun\\bin\\bun.exe", args: ["C:\\Users\\u\\omo.js"] };
+  const calls = [];
+  const selfLaunch = { register: async (req) => { calls.push(req); return { ok: true, selfTask: "\\omo-limitless\\omo-limitless-resume-s1" }; } };
+  const p = proc({ env: {}, daemon: "none", selfLaunch, extra: { resolveLauncher: async () => launcher } });
+  try {
+    await p.start();
+    assert.deepEqual(calls[0].launcher, launcher);
+    assert.deepEqual(p.read(p.records()[0]).launcher, launcher);
   } finally { p.h.cleanup(); }
 });
 

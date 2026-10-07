@@ -2,7 +2,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import { createHarness, GOAL_CONTINUATION_TEXT } from "./harness.mjs";
 import { startLimitless } from "../extension/limitless.mjs";
-import { hhmm, statusText, STATUS_KEY, TEXTS } from "../extension/core.mjs";
+import { GOAL_HELD_NOTICE_TYPE, hhmm, statusText, STATUS_KEY, TEXTS } from "../extension/core.mjs";
 import { snapshotPath, statePath, writeSharedSnapshot } from "../extension/state.mjs";
 import { existsSync, readFileSync, writeFileSync, mkdirSync } from "node:fs";
 import { dirname } from "node:path";
@@ -81,7 +81,8 @@ test("goal activated during the park is paused in the same tick with pausedByLim
     assert.equal(h.goalStore.goal.status, "paused");
     assert.equal(core.ownedGoalId(), "g1");
     assert.equal(state().pausedByLimitless, "g1");
-    assert.equal(h.notifications.at(-1).text, `goal은 ${hhmm(RESET)} 리셋 뒤 시작합니다. 지금 돌리려면 /limitless resume`);
+    assert.deepEqual(h.sentMessages.map((m) => m.msg), [{ customType: GOAL_HELD_NOTICE_TYPE, display: true, content: `goal은 ${hhmm(RESET)} 리셋 뒤 시작합니다. 지금 돌리려면 /limitless resume` }]);
+    assert.equal(h.notifications.length, 1, "the goal-held notice is a persistent message, not a status line that the next status overwrites");
     const turn = await h.runTurn({ tools: ["task"] });
     assert.deepEqual(turn.executed, []);
   } finally { h.cleanup(); }
@@ -180,7 +181,7 @@ test("race without a store event (/goal path): continuation turn pauses the goal
   } finally { h.cleanup(); }
 });
 
-test("releaseOwnedGoal: idle emits goal_store_changed once, busy sends one followUp, foreign pause untouched", async () => {
+test("releaseOwnedGoal: idle emits goal_store_changed once, busy queues nothing and emits once at agent_settled, foreign pause untouched", async () => {
   const idle = setup({ branch: PRIOR_TURN, goal: GOAL });
   const busy = setup({ branch: PRIOR_TURN, goal: GOAL });
   const foreign = setup({ branch: PRIOR_TURN, goal: { ...GOAL, status: "paused" } });
@@ -188,7 +189,7 @@ test("releaseOwnedGoal: idle emits goal_store_changed once, busy sends one follo
     idle.h.installFakeGoalExtension();
     for (const s of [idle, busy, foreign]) await s.h.fire("session_start", { type: "session_start", reason: "startup" });
     await idle.core.release({ reason: "test" });
-    assert.equal(await idle.core.releaseOwnedGoal({ reason: "test", text: TEXTS.manualResume }), true);
+    assert.equal(await idle.core.releaseOwnedGoal({ reason: "test" }), true);
     assert.equal(idle.h.goalStore.goal.status, "active");
     assert.deepEqual(idle.h.eventsEmitted.filter((e) => e.name === "goal_store_changed"), [{ name: "goal_store_changed", payload: { threadId: "s1" } }]);
     assert.equal(idle.h.queuedTurns.length, 1, "exactly one continuation turn queued");
@@ -197,9 +198,13 @@ test("releaseOwnedGoal: idle emits goal_store_changed once, busy sends one follo
 
     busy.h.setIdle(false);
     await busy.core.release({ reason: "test" });
-    assert.equal(await busy.core.releaseOwnedGoal({ reason: "test", text: TEXTS.resetResume }), true);
-    assert.deepEqual(busy.h.sentUserMessages, [{ text: TEXTS.resetResume, opts: { deliverAs: "followUp" } }]);
+    assert.equal(await busy.core.releaseOwnedGoal({ reason: "test" }), true);
+    assert.deepEqual(busy.h.sentUserMessages, []);
+    assert.deepEqual(busy.h.sentMessages, []);
     assert.equal(busy.h.eventsEmitted.filter((e) => e.name === "goal_store_changed").length, 0);
+    busy.h.setIdle(true);
+    await busy.h.fire("agent_settled", { type: "agent_settled" });
+    assert.equal(busy.h.eventsEmitted.filter((e) => e.name === "goal_store_changed").length, 1);
 
     assert.equal(foreign.core.ownedGoalId(), null);
     assert.equal(await foreign.core.releaseOwnedGoal({}), false);
@@ -288,7 +293,7 @@ test("usage drop below threshold at a boundary releases a poll park and resumes 
     await h.runTurn();
     assert.equal(core.isParked(), false);
     assert.equal(h.goalStore.goal.status, "active");
-    assert.equal(h.sentUserMessages.length, 1);
+    assert.equal(h.sentUserMessages.length, 0);
   } finally { h.cleanup(); }
 });
 
@@ -584,9 +589,10 @@ test("unknown reset: status line is exactly the no-time text and no notice/goal/
     assert.equal(h.goalStore.goal.status, "paused");
     h.setGoal({ id: "g2", status: "active", objective: "more" });
     await h.pi.events.emit("goal_store_changed", { threadId: "s1" });
-    assert.ok(h.notifications.length >= 2);
-    assert.ok(h.notifications.some((n) => n.text.includes("리셋 시각을 아직 몰라")));
+    assert.ok(h.notifications.length >= 1);
+    assert.ok(h.sentMessages.some((m) => m.msg.content.includes("리셋 시각을 아직 몰라")));
     for (const notice of h.notifications) assert.doesNotMatch(notice.text, CLOCK);
+    for (const { msg } of h.sentMessages) assert.doesNotMatch(msg.content, CLOCK);
     assert.doesNotMatch(core.blockReason(), CLOCK);
     assert.doesNotMatch(TEXTS.goalHeld(null), CLOCK);
     assert.equal(hhmm(null), "--:--");

@@ -156,9 +156,12 @@ test("invalid subcommand prints usage and changes no state", async (t) => {
   assert.deepEqual(h.core.state, before);
 });
 
-test("busy release delivers exactly one follow-up", async (t) => {
+test("busy release queues no message and restarts the goal once at agent_settled", async (t) => {
   const h = await setup(t, { idle: false });
   await h.command.handler("resume", h.ctx);
-  assert.equal(h.sentUserMessages.length, 1);
+  assert.equal(h.sentUserMessages.length, 0);
   assert.equal(h.eventsEmitted.filter((event) => event.name === "goal_store_changed").length, 0);
+  h.setIdle(true);
+  await h.fire("agent_settled", { type: "agent_settled" });
+  assert.equal(h.eventsEmitted.filter((event) => event.name === "goal_store_changed").length, 1);
 });

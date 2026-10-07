@@ -40,7 +40,7 @@ export function install(core) {
     core.persist();
     if (mode === "off" && core.isParked()) {
       await core.release({ reason: "control-off" });
-      await core.releaseOwnedGoal({ reason: "control-off", text: core.texts.manualResume });
+      await core.releaseOwnedGoal({ reason: "control-off" });
     } else if (wasOff && mode === "on" && core.enabled()) {
       await core.poll({ force: true });
     }
@@ -99,7 +99,7 @@ export function install(core) {
         await core.park({ ...decision, state: "park-wait" }, { source: "manual" });
       } else if (action === "resume" || action === "off") {
         if (core.isParked()) await core.release({ reason: action === "off" ? "manual-off" : "manual" });
-        await core.releaseOwnedGoal({ reason: action === "off" ? "manual-off" : "manual", text: core.texts.manualResume });
+        await core.releaseOwnedGoal({ reason: action === "off" ? "manual-off" : "manual" });
       } else if (action === "on" && core.enabled()) {
         await core.poll({ force: true });
       }

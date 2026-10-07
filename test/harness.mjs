@@ -160,7 +160,7 @@ export function createHarness({
         pi.sendMessage({ customType: "goal-continuation", content: GOAL_CONTINUATION_TEXT, display: false }, { triggerTurn: true, deliverAs: "followUp" });
       });
     },
-    // Runs one agent run: before_agent_start, the given tool calls, agent_end, turn_end, agent_settled.
+    // Runs one agent run in senpi's order: before_agent_start, the given tool calls, turn_end, agent_end, agent_settled.
     // A tool "executes" when no tool_call handler returned {block:true}.
     async runTurn({ trigger = "prompt", prompt = "hi", tools = [] } = {}) {
       const before = await fire("before_agent_start", { type: "before_agent_start", trigger, prompt, systemPrompt: "", systemPromptOptions: {} });
@@ -172,8 +172,8 @@ export function createHarness({
         if (block) blocked.push({ toolName, reason: block.reason });
         else executed.push(toolName);
       }
-      await fire("agent_end", { type: "agent_end", messages: [] });
       await fire("turn_end", { type: "turn_end", turnIndex: 0, message: { role: "assistant", content: [] }, toolResults: [] });
+      await fire("agent_end", { type: "agent_end", messages: [] });
       await fire("agent_settled", { type: "agent_settled" });
       return { before, executed, blocked };
     },
