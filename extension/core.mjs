@@ -19,7 +19,8 @@
 //     Features keep their own data under a key named after the feature (state.warm is the policy's warm).
 // core.startState                            frozen copy of the state file as loaded at session_start, or null
 //                                            (todo 8 reads parkState:"exited" here; the core never writes it)
-// core.persist()                             write state to <home>/.omo/limitless/state/<sid>.json (temp+rename)
+// core.persist()                             write state to <home>/.omo/limitless/state/<sid>.json (temp+rename);
+//                                            a failed write sets state.lastError {at, where:"write", path, message}
 // core.getPolicy()                           last decision (same as core.state.decision)
 // core.poll({force})                         usage + policy; throttled to pollMinIntervalMs unless force.
 //                                            Applies the result: park -> park(); ok -> release a poll park and
@@ -72,6 +73,11 @@
 //                                            resetAt, window, source, reason, warm} where warm is the policy's
 //                                            {on, intervalMs, requireTtlSeconds} for that park (null when ok).
 //                                            park() without decision.warm keeps the last policy decision's warm.
+// core.onSessionReset(fn())                  per-session teardown: runs on session_shutdown and when the session id
+//                                            changes inside one process (/new, /resume), while core.state is still
+//                                            the OLD session's. Features reset their closures there; the core then
+//                                            clears every timer and its own per-session state. After a shutdown
+//                                            core.sessionId is null (nothing persists until the next session loads).
 // core.onBoundary(fn(ctx, kind))             after the core's own work at kind "session_start"|"turn_end"|"agent_settled"
 // core.timers.set(name, ms, fn(ctx)) / clear(name) / has(name)
 //                                            one timer per name on the injected clock (deps.setTimeout); every
@@ -81,7 +87,7 @@
 //                                            agent_end. core.blockAllToolsInTurn() -> boolean, core.turn -> {kind}
 // core.setControlReader(fn(ctx, kind))       control-file hook (todo 9): awaited at the start of every boundary
 //                                            and timer tick; it may change state.mode or call release()
-// core.now(), core.hhmm(ms)                  injected clock; local HH:MM
+// core.now(), core.hhmm(ms)                  injected clock; HH:MM today, M/D HH:MM on another local day
 // core.setStatus(text|undefined), core.notify(text, level), core.recordError(where, err)
 // core.blockReason()                         "limitless: usage limit <window> <util>% - resumes <HH:MM>"
 // core.texts                                 {resetResume, manualResume, raceNote, goalHeld(hhmm)}
@@ -95,7 +101,7 @@ import { pathToFileURL } from "node:url";
 import { decide } from "./policy.mjs";
 import { readAuthJson, resolveLane } from "./lane.mjs";
 import { readUsage as defaultReadUsage } from "./usage.mjs";
-import { loadState, readSharedSnapshot, saveState, writeSharedSnapshot } from "./state.mjs";
+import { loadState, readSharedSnapshot, saveState, statePath, writeSharedSnapshot } from "./state.mjs";
 
 export const STATUS_KEY = "limitless";
 export const SPAWN_TOOLS = new Set(["task", "task_create"]);
@@ -115,15 +121,18 @@ export const TEXTS = {
 
 const knownTime = (ms) => typeof ms === "number" && Number.isFinite(ms);
 
-// Local HH:MM; "--:--" for an unknown time (null/NaN must never render as a clock, new Date(null) is 1970).
-export function hhmm(ms) {
+// THE reset-time formatter (status bar, notices, /limitless status). Shows HH:MM today, prefixed with M/D when `now` is
+// given and the reset falls on another local day; "--:--" for an unknown time (null/NaN must never render as a
+// clock, new Date(null) is 1970).
+export function hhmm(ms, now) {
   const d = new Date(ms);
-  return knownTime(ms) && Number.isFinite(d.getTime())
-    ? `${String(d.getHours()).padStart(2, "0")}:${String(d.getMinutes()).padStart(2, "0")}`
-    : "--:--";
+  if (!knownTime(ms) || !Number.isFinite(d.getTime())) return "--:--";
+  const clock = `${String(d.getHours()).padStart(2, "0")}:${String(d.getMinutes()).padStart(2, "0")}`;
+  if (!knownTime(now) || d.toDateString() === new Date(now).toDateString()) return clock;
+  return `${d.getMonth() + 1}/${d.getDate()} ${clock}`;
 }
 
-export const statusText = (resetAt) => knownTime(resetAt) ? `⏸ 한도 대기 · ${hhmm(resetAt)} 재개` : "⏸ 한도 대기 · 재개 시각 미정";
+export const statusText = (resetAt, now) => knownTime(resetAt) ? `⏸ 한도 대기 · ${hhmm(resetAt, now)} 재개` : "⏸ 한도 대기 · 재개 시각 미정";
 
 const freshState = () => ({
   v: 1, parkState: "ok", armed: false, source: null, window: null, util: null, resetAt: null, reason: null,
@@ -134,7 +143,31 @@ const freshState = () => ({
 
 const errText = (error) => String(error instanceof Error ? error.message : error);
 
-// senpi's goal store, loaded the same way as omo-rollover/extension/rollover.ts:234-257. Never throws on load.
+const GOAL_REL = ["core", "extensions", "builtin", "goal"];
+
+// Where senpi's dist can be. The bundled senpi runs `<senpi>/dist/bundle/cli.js` (argv[1] is NOT directly in dist),
+// the older unbundled one `<senpi>/dist/cli.js`; omo's launcher also exports OMO_BIN=<omo-ai>/bin/omo.js, whose
+// senpi sits either under omo-ai/node_modules or hoisted next to omo-ai in the global node_modules.
+export function senpiDistCandidates({ env = process.env, argv1 = process.argv[1] } = {}) {
+  const out = [];
+  const add = (path) => { if (path && !out.includes(path)) out.push(path); };
+  const fromBin = (bin) => {
+    const pkg = join("@code-yeongyu", "senpi", "dist");
+    add(join(dirname(dirname(bin)), "node_modules", pkg));
+    add(join(dirname(dirname(dirname(bin))), pkg));
+  };
+  if (argv1) {
+    let dir = dirname(argv1);
+    for (let i = 0; i < 3; i += 1, dir = dirname(dir)) add(dir);
+    fromBin(argv1);
+  }
+  if (env.OMO_BIN) fromBin(env.OMO_BIN);
+  return out;
+}
+
+// senpi's goal store (dist/core/extensions/builtin/goal/{store,store-ref}.js), loaded by deriving the dist path the
+// way omo-rollover does, widened for the bundled layout (argv[1] = dist/bundle/cli.js). The store is file-backed with
+// its own lock, so this module instance and senpi's bundled copy see the same goal. Never throws on load.
 export function createSenpiGoalStore({ env = process.env, argv1 = process.argv[1], fs = nodeFs } = {}) {
   let loading;
   const load = () => loading ??= (async () => {
@@ -144,10 +177,8 @@ export function createSenpiGoalStore({ env = process.env, argv1 = process.argv[1
         return { store: main, ref: main };
       }
     } catch {}
-    const fromBin = (bin) => join(dirname(dirname(bin)), "node_modules", "@code-yeongyu", "senpi", "dist");
-    const candidates = [...(argv1 ? [dirname(argv1), fromBin(argv1)] : []), ...(env.OMO_BIN ? [fromBin(env.OMO_BIN)] : [])];
-    for (const dist of candidates) {
-      const goal = join(dist, "core", "extensions", "builtin", "goal");
+    for (const dist of senpiDistCandidates({ env, argv1 })) {
+      const goal = join(dist, ...GOAL_REL);
       if (!fs.existsSync(join(goal, "store.js")) || !fs.existsSync(join(goal, "store-ref.js"))) continue;
       try {
         return {
@@ -157,7 +188,10 @@ export function createSenpiGoalStore({ env = process.env, argv1 = process.argv[1
       } catch {}
     }
     return null;
-  })();
+  })().then((loaded) => {
+    if (loaded === null) loading = undefined; // not cached: a later call may find it
+    return loaded;
+  });
   const refOf = (loaded, ctx) => loaded.ref.goalStoreRef(ctx.sessionManager, ctx.cwd ?? ctx.sessionManager?.getCwd?.() ?? process.cwd());
   return {
     async read(ctx) {
@@ -185,6 +219,7 @@ export function createCore(pi, { config, deps = {} } = {}) {
   const transitionFns = [];
   const boundaryFns = [];
   const beforeStartFns = [];
+  const resetFns = [];
   let vetoed = false;
   const timerHandles = new Map();
   let controlReader = null;
@@ -202,11 +237,18 @@ export function createCore(pi, { config, deps = {} } = {}) {
     turn: null,
     texts: TEXTS,
     now: () => now(),
-    hhmm,
+    hhmm: (ms) => hhmm(ms, now()),
 
     persist() {
       if (core.sessionId === null || vetoed) return false;
-      return saveState({ homeDir, sessionId: core.sessionId, state: core.state, fs });
+      const ok = saveState({ homeDir, sessionId: core.sessionId, state: core.state, fs });
+      if (!ok) core.writeFailed(statePath(homeDir, core.sessionId));
+      return ok;
+    },
+    // Records a failed file write (writeJsonAtomic/saveState returned false). In memory only: the caller's
+    // next successful persist() carries it to disk.
+    writeFailed(path) {
+      core.state.lastError = { at: now(), where: "write", path, message: "write failed" };
     },
     recordError(where, error) {
       core.state.lastError = { at: now(), where, message: errText(error) };
@@ -229,12 +271,13 @@ export function createCore(pi, { config, deps = {} } = {}) {
     ownedGoalId: () => core.state.pausedByLimitless ?? null,
     blockReason() {
       const { window, util, resetAt } = core.state;
-      return `limitless: usage limit ${window ?? "unknown"} ${util ?? "?"}% - resumes ${knownTime(resetAt) ? hhmm(resetAt) : "when the reset time is known (not known yet)"}`;
+      return `limitless: usage limit ${window ?? "unknown"} ${util ?? "?"}% - resumes ${knownTime(resetAt) ? hhmm(resetAt, now()) : "when the reset time is known (not known yet)"}`;
     },
 
     onTransition(fn) { transitionFns.push(fn); },
     onBoundary(fn) { boundaryFns.push(fn); },
     onBeforeSessionStart(fn) { beforeStartFns.push(fn); },
+    onSessionReset(fn) { resetFns.push(fn); },
     isVetoed: () => vetoed,
 
     async readUsage(provider, account) {
@@ -287,6 +330,9 @@ export function createCore(pi, { config, deps = {} } = {}) {
       }
     },
 
+    // The one goal-status writer (park-exit re-activates through it too).
+    setGoalStatus: (ctx, status) => goalStore.setStatus(ctx, status),
+
     async pauseActiveGoal({ notice = false } = {}) {
       // Single flight: concurrent callers (goal_store_changed, before_agent_start, tool_call) share one pause.
       if (holding) return holding;
@@ -302,7 +348,7 @@ export function createCore(pi, { config, deps = {} } = {}) {
         }
         core.state.pausedByLimitless = goal.id;
         core.persist();
-        if (notice) core.notify(TEXTS.goalHeld(knownTime(core.state.resetAt) ? hhmm(core.state.resetAt) : null), "info");
+        if (notice) core.notify(TEXTS.goalHeld(knownTime(core.state.resetAt) ? hhmm(core.state.resetAt, now()) : null), "info");
         return goal.id;
       })();
       holding = run.finally(() => { holding = null; });
@@ -357,12 +403,12 @@ export function createCore(pi, { config, deps = {} } = {}) {
         s.latecomer = s.hadPriorTurns !== true;
         s.episodeNotified = false;
       }
-      core.setStatus(statusText(s.resetAt));
+      core.setStatus(statusText(s.resetAt, now()));
       core.persist();
       const pausedNow = core.enabled() ? await core.pauseActiveGoal({ notice: false }) : null;
       if (!s.episodeNotified) {
         s.episodeNotified = true;
-        const when = knownTime(s.resetAt) ? `${hhmm(s.resetAt)} 재개.` : "리셋 시각을 아직 몰라 재개 시각 미정.";
+        const when = knownTime(s.resetAt) ? `${hhmm(s.resetAt, now())} 재개.` : "리셋 시각을 아직 몰라 재개 시각 미정.";
         const head = `⏸ 사용량 한도 대기 (${s.window ?? "?"} ${s.util ?? "?"}%) · ${when}`;
         const goalOwned = pausedNow !== null || s.pausedByLimitless !== null;
         core.notify(goalOwned
@@ -436,6 +482,11 @@ export function createCore(pi, { config, deps = {} } = {}) {
       }
       if (loaded) applySession();
       await boundary(ctx, "session_start");
+    },
+    handleSessionShutdown() {
+      if (vetoed || core.sessionId === null) return;
+      resetSession();
+      core.sessionId = null;
     },
     async handleTurnEnd(event, ctx) {
       if (vetoed) return;
@@ -511,8 +562,16 @@ export function createCore(pi, { config, deps = {} } = {}) {
     try { await controlReader(ctx, kind); } catch (error) { core.recordError("control", error); }
   }
 
+  // IS-1: while parked, a session with an active goal never spawns. The block does not depend on the pause landing
+  // (a failed pause still blocks) nor on the goal being readable (a limitless-owned pause is remembered in state).
   async function gated(ctx) {
-    const goal = await core.readGoal(ctx);
+    let goal = null;
+    try {
+      goal = (await goalStore.read(ctx)) ?? null;
+    } catch (error) {
+      core.recordError("goal-read", error);
+      return core.state.pausedByLimitless !== null;
+    }
     if (goal?.status === "paused" && goal.id === core.state.pausedByLimitless) return true;
     if (goal?.status !== "active") return false;
     await core.pauseActiveGoal({ notice: true });
@@ -527,6 +586,7 @@ export function createCore(pi, { config, deps = {} } = {}) {
   function loadSession(ctx) {
     const sid = ctx?.sessionManager?.getSessionId?.();
     if (typeof sid !== "string" || sid === core.sessionId) return false;
+    if (core.sessionId !== null) resetSession(); // /new or /resume inside one process
     core.sessionId = sid;
     lastPollAt = null;
     const loaded = loadState({ homeDir, sessionId: sid, fs });
@@ -547,8 +607,21 @@ export function createCore(pi, { config, deps = {} } = {}) {
     return true;
   }
 
+  // Tears down everything owned by the current session: feature closures first (core.state is still the
+  // old session's, so a feature may persist), then every timer and the core's own per-session state.
+  function resetSession() {
+    for (const fn of resetFns) {
+      try { fn(); } catch (error) { core.state.lastError = { at: now(), where: "session-reset", message: errText(error) }; }
+    }
+    for (const name of [...timerHandles.keys()]) core.timers.clear(name);
+    holding = null;
+    staleOwnedGoal = false;
+    lastPollAt = null;
+    core.turn = null;
+  }
+
   function applySession() {
-    if (core.isParked()) core.setStatus(statusText(core.state.resetAt)); // restart mid-park: the park survives
+    if (core.isParked()) core.setStatus(statusText(core.state.resetAt, now())); // restart mid-park: the park survives
     core.persist();
   }
 
@@ -627,6 +700,7 @@ export function createCore(pi, { config, deps = {} } = {}) {
     return { ...decision, util: utilFrom(decision.reason) };
   }
 
+  pi.on?.("session_shutdown", () => core.handleSessionShutdown());
   return core;
 }
 
