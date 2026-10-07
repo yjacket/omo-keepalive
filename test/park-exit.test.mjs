@@ -254,6 +254,15 @@ test("park record stores the resolved launcher and hands it to the self-launch r
   } finally { p.h.cleanup(); }
 });
 
+test("an invalid launcher reported by the registration is recorded as lastError {where:'launcher'}", async () => {
+  const selfLaunch = { register: async () => ({ ok: true, selfTask: "\\omo-limitless\\omo-limitless-resume-s1", launcherWarning: "invalid launcher, fell back to bare omo" }) };
+  const p = proc({ env: {}, daemon: "none", selfLaunch });
+  try {
+    await p.start();
+    assert.equal(p.core.state.lastError?.where, "launcher");
+  } finally { p.h.cleanup(); }
+});
+
 test("latecomer never park-exits", async () => {
   const p = proc({ branch: [] });
   try {
@@ -616,3 +625,21 @@ test("E1 replacement: active replacement goal is paused by core and park-exits",
     assert.deepEqual(p.h.goalStore.setStatusCalls, ["paused", "paused", "active"]);
   } finally { p.h.cleanup(); }
 });
+
+for (const [name, failure] of [
+  ["powershell timeout", { ok: false, reason: "powershell-timeout" }],
+  ["non-zero exit", { ok: false, reason: "powershell-exit-1: boom" }],
+  ["registration not confirmed", { ok: false, reason: "registration-not-confirmed" }],
+]) {
+  test(`failed registration (${name}) records lastError {where:'launcher'} only when the launcher was invalid`, async () => {
+    const withWarning = proc({ env: {}, daemon: "none", selfLaunch: { register: async () => ({ ...failure, launcherWarning: "invalid launcher, fell back to bare omo" }) } });
+    const clean = proc({ env: {}, daemon: "none", selfLaunch: { register: async () => ({ ...failure }) } });
+    try {
+      await withWarning.start();
+      assert.equal(withWarning.core.state.lastError?.where, "launcher");
+      assert.equal(withWarning.h.shutdownCalls.length, 0, "a failed registration never shuts down");
+      await clean.start();
+      assert.notEqual(clean.core.state.lastError?.where, "launcher");
+    } finally { withWarning.h.cleanup(); clean.h.cleanup(); }
+  });
+}

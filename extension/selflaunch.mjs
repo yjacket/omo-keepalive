@@ -196,7 +196,10 @@ export function createSelfLaunch(deps = {}) {
     if (!Number.isFinite(at)) throw new Error("self-launch: invalid trigger time");
     if (platform !== "win32") return { ok: false, reason: "not-windows" };
     // Windows Terminal splits its command line at ';' even inside quotes: such a cwd must only reach cmd.exe.
-    const launch = validLauncher(launcher, fs) ?? { exe: "omo", args: [] };
+    const valid = validLauncher(launcher, fs);
+    const launch = valid ?? { exe: "omo", args: [] };
+    // A launcher the caller supplied but that failed validation is replaced by bare omo; the caller records the warning.
+    const warn = launcher !== undefined && valid === null ? { launcherWarning: "invalid launcher, fell back to bare omo" } : {};
     const wt = dir.includes(";") || launch.exe.includes(";") ? null : findExe("wt.exe");
     const kind = wt ? "wt" : "cmd";
     const exe = wt ?? env.ComSpec ?? "cmd.exe";
@@ -209,10 +212,10 @@ export function createSelfLaunch(deps = {}) {
         OMO_LL_AT: isoLocal(Math.max(at, now() + MIN_LEAD_MS)),
       },
     });
-    if (result?.timedOut) return { ok: false, reason: "powershell-timeout" };
-    if (result?.code !== 0) return { ok: false, reason: `powershell-exit-${result?.code ?? "none"}: ${lastLine(result?.stderr).slice(0, 200)}` };
-    if (lastLine(result.stdout) !== `LIMITLESS-REGISTERED ${selfTask}`) return { ok: false, reason: "registration-not-confirmed" };
-    return { ok: true, selfTask };
+    if (result?.timedOut) return { ok: false, reason: "powershell-timeout", ...warn };
+    if (result?.code !== 0) return { ok: false, reason: `powershell-exit-${result?.code ?? "none"}: ${lastLine(result?.stderr).slice(0, 200)}`, ...warn };
+    if (lastLine(result.stdout) !== `LIMITLESS-REGISTERED ${selfTask}`) return { ok: false, reason: "registration-not-confirmed", ...warn };
+    return { ok: true, selfTask, ...warn };
   }
 
   async function unregister({ sessionId, selfTask } = {}) {

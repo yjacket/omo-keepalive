@@ -172,6 +172,7 @@ export function install(core) {
         } catch (error) {
           core.recordError("park-exit-selflaunch", error);
         }
+        if (registered?.launcherWarning) core.recordError("launcher", new Error(registered.launcherWarning));
         if (registered?.ok !== true) return hold("no-relauncher");
         selfTask = registered.selfTask ?? null;
         terminal = { kind: "self" };

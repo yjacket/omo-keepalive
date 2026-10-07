@@ -5,7 +5,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import { createHarness, GOAL_CONTINUATION_TEXT } from "./harness.mjs";
 import { startLimitless } from "../extension/limitless.mjs";
-import { GOAL_HELD_NOTICE_TYPE, hhmm } from "../extension/core.mjs";
+import { hhmm } from "../extension/core.mjs";
 
 const T0 = Date.UTC(2026, 9, 7, 3, 0, 0);
 const RESET = T0 + 2 * 3600000;
@@ -147,9 +147,8 @@ test("a release that is re-parked before agent_settled does not restart the goal
 });
 
 const HELD = `goal은 ${hhmm(RESET)} 리셋 뒤 시작합니다. 지금 돌리려면 /limitless resume`;
-const heldNotices = (h) => h.sentMessages.filter((m) => m.msg.customType === GOAL_HELD_NOTICE_TYPE);
 
-test("a goal paused by a park refresh after the episode notice was spent still announces it, once, as a persistent message", async () => {
+test("a goal paused by a park refresh after the episode notice was spent still announces it, once, in the notice widget", async () => {
   const { h, core } = setup({ goal: null });
   try {
     await h.fire("session_start", start);
@@ -160,10 +159,11 @@ test("a goal paused by a park refresh after the episode notice was spent still a
     await h.fire("agent_settled", { type: "agent_settled" });
     assert.equal(h.goalStore.goal.status, "paused");
     assert.equal(core.ownedGoalId(), "g1");
-    assert.deepEqual(heldNotices(h).map((m) => [m.msg.content, m.msg.display]), [[HELD, true]]);
+    assert.equal(h.notice(), HELD);
     await h.pi.events.emit("goal_store_changed", { threadId: "s1" });
     await h.fire("agent_settled", { type: "agent_settled" });
-    assert.equal(heldNotices(h).length, 1, "the held goal is announced once");
+    assert.equal(h.notice(), HELD, "the held goal is announced once");
+    assert.deepEqual(h.sentMessages, []);
     assert.equal(h.notifications.length, 1, "no transient status line that the next status could overwrite");
   } finally { h.cleanup(); }
 });
@@ -177,7 +177,7 @@ test("concurrent pause callers share one pause and the notice is posted when any
     assert.equal(a, "g1");
     assert.equal(b, "g1");
     assert.deepEqual(h.goalStore.setStatusCalls, ["paused"]);
-    assert.equal(heldNotices(h).length, 1);
+    assert.equal(h.notice(), HELD);
   } finally { h.cleanup(); }
 });
 
@@ -186,8 +186,70 @@ test("the first park carries the goal in its own episode notice and posts no sec
   try {
     await h.fire("session_start", start);
     assert.equal(h.goalStore.goal.status, "paused");
-    assert.equal(h.notifications.length, 1);
-    assert.match(h.notifications[0].text, /goal을 멈췄고/);
-    assert.equal(heldNotices(h).length, 0);
+    assert.equal(h.notifications.length, 0, "the goal park notice is a persistent message, not a status line");
+    assert.match(h.notice(), /goal을 멈췄고/);
+    assert.doesNotMatch(h.notice(), /리셋 뒤 시작/);
+    assert.deepEqual(h.sentMessages, []);
+  } finally { h.cleanup(); }
+});
+
+const turnEnd = (h) => h.fire("turn_end", { type: "turn_end", turnIndex: 0, message: { role: "assistant", content: [] }, toolResults: [] });
+
+test("notices never steer: nothing but the warm turn is ever sent as a conversation message", async () => {
+  for (const idle of [true, false]) {
+    const { h } = setup({ goal: null });
+    try {
+      await h.fire("session_start", start);
+      h.setIdle(idle);
+      h.setGoal(GOAL);
+      h.clock.advance(61000);
+      await h.fire("agent_settled", { type: "agent_settled" });
+      assert.equal(h.notice(), HELD, `held notice shown (idle=${idle})`);
+      assert.deepEqual(h.sentMessages, []);
+    } finally { h.cleanup(); }
+  }
+  const { h } = setup();
+  try {
+    await h.fire("session_start", start);
+    await beginWarmTurn(h);
+    assert.match(h.notice(), /goal을 멈췄고/);
+    assert.ok(h.sentMessages.length > 0);
+    for (const { msg, opts } of h.sentMessages) {
+      assert.equal(msg.customType, "limitless-warm");
+      assert.equal(opts?.triggerTurn, true);
+    }
+  } finally { h.cleanup(); }
+});
+
+test("an automatic continuation (agent_start without before_agent_start) owns the restart: no goal_store_changed, no extra turn", async () => {
+  const { h, core, setUtil } = setup();
+  try {
+    await h.fire("session_start", start);
+    await beginWarmTurn(h);
+    setUtil(10);
+    h.clock.advance(61000);
+    await turnEnd(h);
+    assert.equal(core.isParked(), false);
+    await h.fire("agent_end", { type: "agent_end", messages: [] });
+    await h.fire("agent_start", { type: "agent_start" });
+    await turnEnd(h);
+    await endRun(h);
+    assert.equal(goalEmits(h), 0);
+    assert.equal(h.queuedTurns.length, 0);
+  } finally { h.cleanup(); }
+});
+
+test("a session reset drops the pending restart kick", async () => {
+  const { h, core, setUtil } = setup();
+  try {
+    await h.fire("session_start", start);
+    await beginWarmTurn(h);
+    setUtil(10);
+    h.clock.advance(61000);
+    await turnEnd(h);
+    assert.equal(core.isParked(), false);
+    core.handleSessionShutdown();
+    await endRun(h);
+    assert.equal(goalEmits(h), 0);
   } finally { h.cleanup(); }
 });

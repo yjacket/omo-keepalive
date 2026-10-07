@@ -105,7 +105,7 @@ import { loadState, readSharedSnapshot, saveState, statePath, writeSharedSnapsho
 
 export const STATUS_KEY = "limitless";
 export const SPAWN_TOOLS = new Set(["task", "task_create"]);
-export const GOAL_HELD_NOTICE_TYPE = "limitless-goal-held";
+export const NOTICE_WIDGET_KEY = "limitless-notice";
 export const GOAL_CONTINUATION_PREFIX = "Continue working toward the active thread goal.";
 const SUBSCRIPTION = new Set(["anthropic-subscription", "chatgpt-subscription"]);
 const PARKED = new Set(["park-wait", "park-exit"]);
@@ -261,6 +261,12 @@ export function createCore(pi, { config, deps = {} } = {}) {
     setStatus(text) {
       try { core.lastCtx?.ui?.setStatus?.(STATUS_KEY, text); } catch (error) { core.state.lastError = { at: now(), where: "status", message: errText(error) }; }
     },
+    // The persistent park / goal-held notice: one TUI widget (ctx.ui.setWidget, senpi extensions/types.d.ts:153), text
+    // replaced per state, undefined clears. A widget is UI chrome, never a session entry or an LLM message, so it can
+    // never reach a model request (custom messages are converted to role:user by every compaction/btw path).
+    setNotice(text) {
+      try { core.lastCtx?.ui?.setWidget?.(NOTICE_WIDGET_KEY, text === undefined ? undefined : [text]); } catch (error) { core.state.lastError = { at: now(), where: "notice", message: errText(error) }; }
+    },
     notify(text, level = "info") {
       try { core.lastCtx?.ui?.notify?.(text, level); } catch (error) { core.state.lastError = { at: now(), where: "notify", message: errText(error) }; }
     },
@@ -337,17 +343,9 @@ export function createCore(pi, { config, deps = {} } = {}) {
     // The one goal-status writer (park-exit re-activates through it too).
     setGoalStatus: (ctx, status) => goalStore.setStatus(ctx, status),
 
-    // The "goal은 HH:MM 리셋 뒤 시작합니다" notice. ui.notify renders through senpi's showStatus, which overwrites the
-    // previous status line when nothing else was added to the chat in between (the /goal command's own notify, a
-    // second limitless notice), so the notice is a persistent display message instead of a transient status line.
+    // The "goal은 HH:MM 리셋 뒤 시작합니다" notice: replaces the park notice in the one notice widget.
     announceGoalHeld() {
-      const text = TEXTS.goalHeld(knownTime(core.state.resetAt) ? hhmm(core.state.resetAt, now()) : null);
-      try {
-        pi.sendMessage({ customType: GOAL_HELD_NOTICE_TYPE, content: text, display: true });
-      } catch (error) {
-        core.recordError("goal-held-notice", error);
-        core.notify(text, "info");
-      }
+      core.setNotice(TEXTS.goalHeld(knownTime(core.state.resetAt) ? hhmm(core.state.resetAt, now()) : null));
     },
 
     async pauseActiveGoal({ notice = false } = {}) {
@@ -396,6 +394,12 @@ export function createCore(pi, { config, deps = {} } = {}) {
       }
       core.state.lastRelease = { at: now(), reason };
       core.persist();
+      // hasPendingMessages() counts senpi's queued steer/follow-up user text (agent-session.js pendingMessageCount =
+      // _steeringMessages + _followUpMessages; pushed at :1745 while a run streams, removed at that message's
+      // message_start :2034-2047). Pending with the session idle is a transient between agent_end and the continuation
+      // senpi always schedules for it (_scheduleContinuationAfterCurrentEvent at :6881, :6721 after compaction), which
+      // fires agent_start and so clears pendingKick (that run owns the restart; the goal extension's agent_end re-queues).
+      // If no run starts, pendingKick still emits at the next agent_settled.
       const idle = ctx?.isIdle?.() === true && ctx?.hasPendingMessages?.() !== true;
       // Busy: no message is queued. A followUp queued from a turn_end/agent_end handler lands after the agent core's
       // last queue poll, is never drained, and its pending state also blocks the goal extension's own continuation
@@ -437,9 +441,10 @@ export function createCore(pi, { config, deps = {} } = {}) {
         const when = knownTime(s.resetAt) ? `${hhmm(s.resetAt, now())} 재개.` : "리셋 시각을 아직 몰라 재개 시각 미정.";
         const head = `⏸ 사용량 한도 대기 (${s.window ?? "?"} ${s.util ?? "?"}%) · ${when}`;
         const goalOwned = pausedNow !== null || s.pausedByLimitless !== null;
-        core.notify(goalOwned
-          ? `${head} goal을 멈췄고 새 서브에이전트는 막힙니다.`
-          : `${head} goal이 없어 작업은 그대로 할 수 있습니다.`, "info");
+        // A parked goal makes the notice a persistent message (a transient status line gets overwritten by the next
+        // status); a session without a goal keeps the single core.notify line next to the status line.
+        if (goalOwned) core.setNotice(`${head} goal을 멈췄고 새 서브에이전트는 막힙니다.`);
+        else core.notify(`${head} goal이 없어 작업은 그대로 할 수 있습니다.`, "info");
       }
       core.persist();
       await emitTransition(prev);
@@ -460,6 +465,7 @@ export function createCore(pi, { config, deps = {} } = {}) {
       s.episodeNotified = false;
       s.lastRelease = { at: now(), reason };
       core.setStatus(undefined);
+      core.setNotice(undefined);
       core.persist();
       await emitTransition(prev);
     },
@@ -530,6 +536,11 @@ export function createCore(pi, { config, deps = {} } = {}) {
         pendingKick = false;
         if (!core.isParked()) await pi.events?.emit?.("goal_store_changed", { threadId: core.sessionId });
       }
+    },
+    // senpi emits agent_start (not before_agent_start) for automatic continuations: a run that starts owns the restart.
+    handleAgentStart() {
+      if (vetoed) return;
+      pendingKick = false;
     },
     async handleAgentEnd(event, ctx) {
       if (vetoed) return;
@@ -641,6 +652,7 @@ export function createCore(pi, { config, deps = {} } = {}) {
   // Tears down everything owned by the current session: feature closures first (core.state is still the
   // old session's, so a feature may persist), then every timer and the core's own per-session state.
   function resetSession() {
+    core.setNotice(undefined);
     for (const fn of resetFns) {
       try { fn(); } catch (error) { core.state.lastError = { at: now(), where: "session-reset", message: errText(error) }; }
     }

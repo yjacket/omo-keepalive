@@ -54,6 +54,7 @@ export function startLimitless(pi, deps = {}, features = FEATURES) {
   pi.on("before_agent_start", (event, ctx) => core.handleBeforeAgentStart(event, ctx), { previewSafe: true });
   pi.on("tool_call", (event, ctx) => core.handleToolCall(event, ctx));
   pi.on("turn_end", (event, ctx) => core.handleTurnEnd(event, ctx));
+  pi.on("agent_start", () => core.handleAgentStart());
   pi.on("agent_end", (event, ctx) => core.handleAgentEnd(event, ctx));
   pi.on("agent_settled", (event, ctx) => core.handleAgentSettled(event, ctx));
   pi.events?.on?.("goal_store_changed", (data) => core.handleGoalStoreChanged(data));

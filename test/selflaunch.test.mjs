@@ -2,8 +2,9 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import * as nodeFs from "node:fs";
 import { mkdtempSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
+import { relative } from "node:path";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { join, isAbsolute } from "node:path";
 import {
   findOnPath, resolveLauncher, validLauncher, REGISTER_SCRIPT, UNREGISTER_SCRIPT, createSelfLaunch, isoLocal, selfTaskOf, taskName,
 } from "../extension/selflaunch.mjs";
@@ -209,3 +210,71 @@ test("the static script builds the exact action argument for both branches (Powe
     assert.equal(out, want);
   }
 });
+
+// Each guard in isolation ---------------------------------------------------------------------------------------
+const anyFileFs = { statSync: () => ({ isFile: () => true }) };
+
+test("validLauncher: every metacharacter in the exe or an arg is rejected on its own (fs says the file exists)", () => {
+  for (const ch of ['"', "%", "&", "|", "<", ">", "^", "`", "$", "!", "\u0001"]) {
+    assert.equal(validLauncher({ exe: `C:\\d\\a${ch}b.exe`, args: [] }, anyFileFs), null, `exe ${JSON.stringify(ch)}`);
+    assert.equal(validLauncher({ exe: BUN, args: [`C:\\d\\a${ch}b.js`] }, anyFileFs), null, `arg0 ${JSON.stringify(ch)}`);
+    assert.equal(validLauncher({ exe: BUN, args: [OMO_JS, `x${ch}y`] }, anyFileFs), null, `arg1 ${JSON.stringify(ch)}`);
+  }
+  assert.deepEqual(validLauncher({ exe: "C:\\d\\ok.exe", args: ["C:\\d\\ok.js", "--flag"] }, anyFileFs), { exe: "C:\\d\\ok.exe", args: ["C:\\d\\ok.js", "--flag"] });
+});
+
+test("validLauncher: real files whose names contain a metacharacter Windows allows are rejected", () => {
+  const dir = join(tmp, "meta");
+  mkdirSync(dir, { recursive: true });
+  for (const [i, ch] of ["%", "&", "^", "`", "$", "!"].entries()) {
+    const file = join(dir, `f${i}${ch}x.exe`);
+    writeFileSync(file, "");
+    assert.equal(validLauncher({ exe: file, args: [] }, nodeFs), null, `exe file ${ch}`);
+    assert.equal(validLauncher({ exe: BUN, args: [file] }, nodeFs), null, `arg0 file ${ch}`);
+  }
+});
+
+test("validLauncher: a relative path to an existing file is rejected (absolute guard alone)", () => {
+  const rel = relative(process.cwd(), BUN);
+  if (isAbsolute(rel)) return; // other drive: no relative form exists
+  assert.equal(nodeFs.statSync(rel).isFile(), true);
+  assert.equal(validLauncher({ exe: rel, args: [] }, nodeFs), null);
+  assert.equal(validLauncher({ exe: BUN, args: [relative(process.cwd(), OMO_JS)] }, nodeFs), null);
+});
+
+test("validLauncher: missing exe or missing arg0 file is rejected (existence guard alone)", () => {
+  assert.equal(validLauncher({ exe: join(tmp, "gone.exe"), args: [] }, nodeFs), null);
+  assert.equal(validLauncher({ exe: BUN, args: [join(tmp, "gone.js")] }, nodeFs), null);
+  assert.equal(validLauncher({ exe: BUN, args: [OMO_JS, ""] }, nodeFs), null);
+  assert.equal(validLauncher({ exe: BUN, args: "x" }, nodeFs), null);
+});
+
+test("register with an invalid launcher falls back to bare omo and reports launcherWarning", async () => {
+  const bad = make();
+  const res = await bad.sl.register({ sessionId: SID, cwd: tmp, at: AT, launcher: { exe: "C:\\x & calc.exe", args: [] } });
+  assert.equal(bad.calls[0].env.OMO_LL_LAUNCH, "omo");
+  assert.equal(res.ok, true);
+  assert.match(res.launcherWarning, /invalid launcher/);
+  const none = make();
+  assert.equal("launcherWarning" in (await none.sl.register({ sessionId: SID, cwd: tmp, at: AT })), false);
+});
+
+// launcherWarning on every register failure path ------------------------------------------------------------------
+const BAD_LAUNCHER = { exe: "C:\\x & calc.exe", args: [] };
+const failureReplies = {
+  "powershell timeout": [() => ({ code: null, stdout: "", stderr: "", timedOut: true }), /^powershell-timeout$/],
+  "non-zero exit": [() => ({ code: 1, stdout: "", stderr: "boom", timedOut: false }), /^powershell-exit-1: boom/],
+  "Get-ScheduledTask confirm failure": [() => ok("something else\r\n"), /^registration-not-confirmed$/],
+};
+for (const [name, [reply, reason]] of Object.entries(failureReplies)) {
+  test(`register failure (${name}): launcherWarning only when the launcher was invalid`, async () => {
+    const bad = await make({ reply }).sl.register({ sessionId: SID, cwd: tmp, at: AT, launcher: BAD_LAUNCHER });
+    assert.equal(bad.ok, false);
+    assert.match(bad.reason, reason);
+    assert.match(bad.launcherWarning, /invalid launcher/);
+    const good = await make({ reply }).sl.register({ sessionId: SID, cwd: tmp, at: AT, launcher: { exe: BUN, args: [OMO_JS] } });
+    assert.equal(good.ok, false);
+    assert.match(good.reason, reason);
+    assert.equal("launcherWarning" in good, false);
+  });
+}

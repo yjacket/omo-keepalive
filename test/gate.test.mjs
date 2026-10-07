@@ -2,7 +2,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import { createHarness, GOAL_CONTINUATION_TEXT } from "./harness.mjs";
 import { startLimitless } from "../extension/limitless.mjs";
-import { GOAL_HELD_NOTICE_TYPE, hhmm, statusText, STATUS_KEY, TEXTS } from "../extension/core.mjs";
+import { hhmm, statusText, STATUS_KEY, TEXTS } from "../extension/core.mjs";
 import { snapshotPath, statePath, writeSharedSnapshot } from "../extension/state.mjs";
 import { existsSync, readFileSync, writeFileSync, mkdirSync } from "node:fs";
 import { dirname } from "node:path";
@@ -81,8 +81,9 @@ test("goal activated during the park is paused in the same tick with pausedByLim
     assert.equal(h.goalStore.goal.status, "paused");
     assert.equal(core.ownedGoalId(), "g1");
     assert.equal(state().pausedByLimitless, "g1");
-    assert.deepEqual(h.sentMessages.map((m) => m.msg), [{ customType: GOAL_HELD_NOTICE_TYPE, display: true, content: `goal은 ${hhmm(RESET)} 리셋 뒤 시작합니다. 지금 돌리려면 /limitless resume` }]);
-    assert.equal(h.notifications.length, 1, "the goal-held notice is a persistent message, not a status line that the next status overwrites");
+    assert.deepEqual(h.sentMessages, [], "no conversation message");
+    assert.equal(h.notice(), `goal은 ${hhmm(RESET)} 리셋 뒤 시작합니다. 지금 돌리려면 /limitless resume`);
+    assert.equal(h.notifications.length, 1, "the goal-held notice is a widget, not a status line that the next status overwrites");
     const turn = await h.runTurn({ tools: ["task"] });
     assert.deepEqual(turn.executed, []);
   } finally { h.cleanup(); }
@@ -122,7 +123,9 @@ test("running goal at park: task blocked with limitless: prefix, read allowed, g
     assert.equal(h.goalStore.goal.status, "paused");
     assert.equal(state().pausedByLimitless, "g1");
     assert.equal(core.isLatecomer(), false);
-    assert.equal(h.notifications.length, 1);
+    assert.equal(h.notifications.length, 0, "the goal park notice is a persistent message");
+    assert.match(h.notice(), /goal을 멈췄고/);
+    assert.deepEqual(h.sentMessages, []);
   } finally { h.cleanup(); }
 });
 
@@ -200,7 +203,7 @@ test("releaseOwnedGoal: idle emits goal_store_changed once, busy queues nothing 
     await busy.core.release({ reason: "test" });
     assert.equal(await busy.core.releaseOwnedGoal({ reason: "test" }), true);
     assert.deepEqual(busy.h.sentUserMessages, []);
-    assert.deepEqual(busy.h.sentMessages, []);
+    assert.deepEqual(busy.h.sentMessages.filter((m) => m.opts?.triggerTurn !== false), []);
     assert.equal(busy.h.eventsEmitted.filter((e) => e.name === "goal_store_changed").length, 0);
     busy.h.setIdle(true);
     await busy.h.fire("agent_settled", { type: "agent_settled" });
@@ -449,7 +452,7 @@ test("reset with a goal the user paused (other id, paused before the park, or no
       if (c.goal) assert.equal(h.goalStore.goal.status, "paused", name);
       assert.deepEqual(h.goalStore.setStatusCalls, callsBefore, `${name}: no un-pause`);
       assert.equal(h.sentUserMessages.length, 0, name);
-      assert.equal(h.sentMessages.length, 0, name);
+      assert.equal(h.sentMessages.filter((m) => m.opts?.triggerTurn !== false).length, 0, name);
       assert.equal(goalEmits(h).length, 0, name);
       assert.equal(h.queuedTurns.length, 0, name);
     } finally { h.cleanup(); }
@@ -589,10 +592,9 @@ test("unknown reset: status line is exactly the no-time text and no notice/goal/
     assert.equal(h.goalStore.goal.status, "paused");
     h.setGoal({ id: "g2", status: "active", objective: "more" });
     await h.pi.events.emit("goal_store_changed", { threadId: "s1" });
-    assert.ok(h.notifications.length >= 1);
-    assert.ok(h.sentMessages.some((m) => m.msg.content.includes("리셋 시각을 아직 몰라")));
+    assert.ok(h.notice().includes("리셋 시각을 아직 몰라"));
     for (const notice of h.notifications) assert.doesNotMatch(notice.text, CLOCK);
-    for (const { msg } of h.sentMessages) assert.doesNotMatch(msg.content, CLOCK);
+    assert.doesNotMatch(h.notice(), CLOCK);
     assert.doesNotMatch(core.blockReason(), CLOCK);
     assert.doesNotMatch(TEXTS.goalHeld(null), CLOCK);
     assert.equal(hhmm(null), "--:--");

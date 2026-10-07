@@ -11,6 +11,7 @@ export function createHarness({
   const handlers = new Map();
   const commands = new Map();
   const statusLines = new Map();
+  const widgets = new Map();
   const notifications = [];
   const sentMessages = [];
   const sentUserMessages = [];
@@ -104,6 +105,7 @@ export function createHarness({
     ui: {
       setStatus: (key, text) => text === undefined ? statusLines.delete(key) : statusLines.set(key, text),
       notify: (text, level) => notifications.push({ text, level }),
+      setWidget: (key, content) => content === undefined ? widgets.delete(key) : widgets.set(key, content),
     },
     // Senpi reports idle state and shuts down the current session through context methods.
     isIdle: () => isIdleNow,
@@ -128,9 +130,11 @@ export function createHarness({
     return results;
   };
   const harness = {
-    pi, ctx, handlers, commands, statusLines, notifications, sentMessages, sentUserMessages,
+    pi, ctx, handlers, commands, statusLines, widgets, notifications, sentMessages, sentUserMessages,
     shutdownCalls, eventsEmitted, clock, tmpHome, goalStore, queuedTurns,
     fire,
+    // Text of the persistent limitless notice widget (undefined when cleared).
+    notice: () => widgets.get("limitless-notice")?.join("\n"),
     setIdle(value) { isIdleNow = value; },
     setPendingMessages(value) { pendingMessages = value; },
     setGoal(value) { goalStore.goal = value ? { ...value } : null; },
