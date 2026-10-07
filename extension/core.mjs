@@ -133,6 +133,10 @@ export function hhmm(ms, now) {
 }
 
 export const statusText = (resetAt, now) => knownTime(resetAt) ? `⏸ 한도 대기 · ${hhmm(resetAt, now)} 재개` : "⏸ 한도 대기 · 재개 시각 미정";
+const parkNoticeText = (state, now) => {
+  const when = knownTime(state.resetAt) ? `${hhmm(state.resetAt, now)} 재개.` : "리셋 시각을 아직 몰라 재개 시각 미정.";
+  return `⏸ 사용량 한도 대기 (${state.window ?? "?"} ${state.util ?? "?"}%) · ${when} goal을 멈췄고 새 서브에이전트는 막힙니다.`;
+};
 
 const freshState = () => ({
   v: 1, parkState: "ok", armed: false, source: null, window: null, util: null, resetAt: null, reason: null,
@@ -438,13 +442,15 @@ export function createCore(pi, { config, deps = {} } = {}) {
       const pausedNow = core.enabled() ? await core.pauseActiveGoal({ notice: s.episodeNotified }) : null;
       if (!s.episodeNotified) {
         s.episodeNotified = true;
-        const when = knownTime(s.resetAt) ? `${hhmm(s.resetAt, now())} 재개.` : "리셋 시각을 아직 몰라 재개 시각 미정.";
-        const head = `⏸ 사용량 한도 대기 (${s.window ?? "?"} ${s.util ?? "?"}%) · ${when}`;
         const goalOwned = pausedNow !== null || s.pausedByLimitless !== null;
         // A parked goal makes the notice a persistent message (a transient status line gets overwritten by the next
         // status); a session without a goal keeps the single core.notify line next to the status line.
-        if (goalOwned) core.setNotice(`${head} goal을 멈췄고 새 서브에이전트는 막힙니다.`);
-        else core.notify(`${head} goal이 없어 작업은 그대로 할 수 있습니다.`, "info");
+        if (goalOwned) core.setNotice(parkNoticeText(s, now()));
+        else {
+          const when = knownTime(s.resetAt) ? `${hhmm(s.resetAt, now())} 재개.` : "리셋 시각을 아직 몰라 재개 시각 미정.";
+          const head = `⏸ 사용량 한도 대기 (${s.window ?? "?"} ${s.util ?? "?"}%) · ${when}`;
+          core.notify(`${head} goal이 없어 작업은 그대로 할 수 있습니다.`, "info");
+        }
       }
       core.persist();
       await emitTransition(prev);
@@ -666,7 +672,14 @@ export function createCore(pi, { config, deps = {} } = {}) {
   }
 
   function applySession() {
-    if (core.isParked()) core.setStatus(statusText(core.state.resetAt, now())); // restart mid-park: the park survives
+    if (core.isParked()) {
+      core.setStatus(statusText(core.state.resetAt, now())); // restart mid-park: the park survives
+      if (core.state.pausedByLimitless !== null) core.setNotice(parkNoticeText(core.state, now()));
+      else core.setNotice(undefined);
+    } else {
+      core.setStatus(undefined);
+      core.setNotice(undefined);
+    }
     core.persist();
   }
 

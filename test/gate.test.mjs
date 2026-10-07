@@ -176,7 +176,9 @@ test("race without a store event (/goal path): continuation turn pauses the goal
     h.setGoal(GOAL);
     const turn = await h.runTurn({ trigger: "extension", prompt: GOAL_CONTINUATION_TEXT, tools: ["read", "task"] });
     assert.deepEqual(turn.executed, []);
-    assert.equal(turn.before.find(Boolean).message.content, TEXTS.raceNote);
+    const marker = turn.before.find(Boolean).message;
+    assert.equal(marker.content, TEXTS.raceNote);
+    assert.equal(marker.display, false);
     assert.equal(h.goalStore.goal.status, "paused");
     assert.equal(core.blockAllToolsInTurn(), false, "turn mark clears at agent_end");
     const userTurn = await h.runTurn({ tools: ["read", "task"] });
@@ -251,6 +253,7 @@ test("process restart mid-park restores the park from the state file", async () 
   try {
     await first.h.fire("session_start", { type: "session_start", reason: "startup" });
     assert.equal(first.core.isParked(), true);
+    const liveNotice = first.h.notice();
     const second = setup({ branch: PRIOR_TURN, homeDir: first.h.tmpHome, goal: { ...GOAL, status: "paused" },
       readUsage: async () => snap(0, 0, "none") });
     second.h.clock.advance(5 * 60000);
@@ -258,10 +261,24 @@ test("process restart mid-park restores the park from the state file", async () 
     assert.equal(second.core.isParked(), true);
     assert.equal(second.h.statusLines.get(STATUS_KEY), statusText(RESET));
     assert.equal(second.core.ownedGoalId(), "g1");
+    assert.equal(second.h.notice(), liveNotice);
     const turn = await second.h.runTurn({ tools: ["task", "read"] });
     assert.deepEqual(turn.executed, ["read"]);
     assert.equal(second.h.notifications.length, 0, "same episode, no second notice");
   } finally { first.h.cleanup(); }
+});
+
+test("process restart with a non-parked state clears a stale notice widget", async () => {
+  const { h } = setup({
+    beforeStart: (harness) => {
+      harness.writeHomeJson(".omo/limitless/state/s1.json", { v: 1, parkState: "ok", armed: false });
+    },
+  });
+  try {
+    h.ctx.ui.setWidget("limitless-notice", ["stale notice"]);
+    await h.fire("session_start", { type: "session_start", reason: "resume" });
+    assert.equal(h.notice(), undefined);
+  } finally { h.cleanup(); }
 });
 
 test("a state file whose reset already passed does not re-park; the owned goal resumes once", async () => {
