@@ -30,7 +30,8 @@ function fixture({
       sendMessage(message, options) { sent.push({ message, options }); },
     },
     state: { parkState: "park-wait", source: "poll", resetAt: 100_000_000, warm: { on: warmOn, intervalMs } },
-    now: () => now, enabled: () => true, canWarm() { return core.state.parkState === "park-wait" && core.state.warm?.on === true && core.state.source !== "reactive"; },
+    now: () => now, enabled: () => true, ownedGoalId: () => "g1", canWarm() { return core.state.parkState === "park-wait" && core.state.warm?.on === true && core.state.source !== "reactive"; },
+    readGoal: async () => ({ id: "g1", status: "paused" }),
     isLatecomer: () => latecomer, persist() {}, recordError(where, error) { core.lastError = { where, message: String(error) }; },
     markExtensionTurn(kind) { core.turn = { kind, blockAll: true }; },
     timers: {
@@ -181,7 +182,7 @@ const snapshot = (utilization, resetAt) => ({
   provider: "anthropic-subscription", account: "default", source: "endpoint", overageEnabled: false,
   windows: [{ kind: "five_hour", utilization, resetAt }],
 });
-function realCore({ readUsage, goal = null, homeDir, now = T0 } = {}) {
+function realCore({ readUsage, goal = { id: "g1", status: "active", objective: "work" }, homeDir, now = T0 } = {}) {
   const h = createHarness({ model: CLAUDE, branch: PRIOR, goal, homeDir, now });
   h.writeHomeJson(".omo/agent/auth.json", { "anthropic-subscription": { access: "fake" } });
   const core = startLimitless(h.pi, h.deps({
@@ -257,4 +258,39 @@ test("resolver start directory is an absolute Windows path without a doubled dri
   assert.doesNotMatch(startDirectory, /^[A-Za-z]:\\[A-Za-z]:\\/);
   assert.equal(win32.normalize(startDirectory), startDirectory);
   assert.equal(isAbsolute(modulePath), true);
+});
+
+test("IS-1: a parked session without a goal is never warmed; once a goal is paused by limitless it is", async (t) => {
+  const { h, core } = realCore({ readUsage: () => snapshot(95, T0 + 3.99 * 3600_000), goal: null });
+  t.after(() => h.cleanup());
+  const warms = () => h.sentMessages.filter((item) => item.msg?.customType === "limitless-warm").length;
+  await h.fire("session_start", {});
+  assert.equal(core.state.parkState, "park-wait");
+  assert.equal(core.ownedGoalId(), null);
+  for (let i = 0; i < 18; i++) await h.clock.tick(10 * 60_000);
+  assert.equal(warms(), 0, "no warm over 3 h without a goal");
+  h.setGoal({ id: "g9", status: "active", objective: "work" });
+  await h.runTurn();
+  assert.equal(h.goalStore.goal.status, "paused");
+  assert.equal(core.ownedGoalId(), "g9");
+  await h.clock.tick(56 * 60_000);
+  assert.ok(warms() >= 1, "warm applies once limitless gates the session");
+});
+
+test("E1: removing the owned goal while parked stops further warm turns", async (t) => {
+  const { h, core } = realCore({ readUsage: () => snapshot(95, T0 + 3.99 * 3600_000) });
+  t.after(() => h.cleanup());
+  await h.fire("session_start", {});
+  assert.equal(core.ownedGoalId(), "g1");
+  await h.clock.tick(55 * 60_000);
+  assert.equal(h.sentMessages.filter((item) => item.msg?.customType === "limitless-warm").length, 1);
+  h.setGoal(null);
+  await h.clock.tick(55 * 60_000);
+  assert.equal(h.sentMessages.filter((item) => item.msg?.customType === "limitless-warm").length, 1);
+  h.setGoal({ id: "g2", status: "active", objective: "replacement" });
+  await h.runTurn();
+  assert.equal(h.goalStore.goal.status, "paused");
+  assert.equal(core.ownedGoalId(), "g2");
+  await h.clock.tick(55 * 60_000);
+  assert.equal(h.sentMessages.filter((item) => item.msg?.customType === "limitless-warm").length, 2);
 });

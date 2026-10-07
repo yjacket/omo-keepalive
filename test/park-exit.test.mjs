@@ -450,3 +450,64 @@ test(`after ${RELAUNCH_REPARK_LIMIT} consecutive re-parks right after relaunch, 
     assert.equal(last.h.notifications.filter((n) => n.text.startsWith("limitless: 재실행 직후")).length, 1);
   } finally { first.h.cleanup(); }
 });
+
+test("IS-1: a parked session without a goal is never park-exited; after a goal is paused it exits as before", async () => {
+  const p = proc({ goal: null });
+  try {
+    await p.start();
+    assert.equal(p.core.state.parkState, "park-exit");
+    assert.equal(p.core.ownedGoalId(), null);
+    await p.h.clock.tick(0);
+    await p.h.runTurn();
+    assert.equal(p.records().length, 0);
+    assert.equal(p.h.shutdownCalls.length, 0);
+    p.h.setGoal({ ...GOAL });
+    await p.h.runTurn();
+    assert.equal(p.records().length, 1);
+    assert.equal(p.h.shutdownCalls.length, 1);
+    assert.deepEqual(p.h.goalStore.setStatusCalls, ["paused", "active"]);
+  } finally { p.h.cleanup(); }
+});
+
+test("E1: removing the owned goal while parked prevents park record and shutdown", async () => {
+  const p = proc();
+  try {
+    await p.wake(1);
+    await p.start();
+    assert.equal(p.core.ownedGoalId(), "g1");
+    p.h.setGoal(null);
+    await p.wake(0);
+    await p.h.runTurn();
+    await p.h.clock.tick(0);
+    assert.equal(p.records().length, 0);
+    assert.equal(p.h.shutdownCalls.length, 0);
+    assert.equal(p.core.state.parkState, "park-wait");
+  } finally { p.h.cleanup(); }
+});
+
+test("E1 replacement: active replacement goal is paused by core and park-exits", async () => {
+  const p = proc();
+  try {
+    await p.wake(1);
+    await p.start();
+    assert.equal(p.core.ownedGoalId(), "g1");
+    assert.equal(p.core.sessionId, "s1");
+    assert.equal(p.core.enabled(), true);
+    assert.equal(p.core.isParked(), true);
+    p.h.setGoal({ id: "g2", status: "active", objective: "replacement" });
+    await p.wake(0);
+    assert.equal(p.h.goalStore.goal.status, "active");
+    assert.equal(p.records().length, 0);
+    assert.equal(p.h.shutdownCalls.length, 0);
+    assert.equal(p.core.ownedGoalId(), "g1");
+    await p.core.handleGoalStoreChanged({ threadId: "s1" });
+    assert.equal(p.h.goalStore.goal.status, "paused");
+    assert.equal(p.core.ownedGoalId(), "g2");
+    await p.wake(0);
+    assert.equal(p.h.goalStore.goal.status, "active");
+    assert.equal(p.core.ownedGoalId(), null);
+    assert.equal(p.records().length, 1);
+    assert.equal(p.h.shutdownCalls.length, 1);
+    assert.deepEqual(p.h.goalStore.setStatusCalls, ["paused", "paused", "active"]);
+  } finally { p.h.cleanup(); }
+});

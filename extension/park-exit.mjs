@@ -113,6 +113,9 @@ export function install(core) {
   async function attempt(ctx = core.lastCtx) {
     if (exited || busy || !wantsExit()) return;
     busy = (async () => {
+      const owned = core.ownedGoalId();
+      const goal = owned ? await core.readGoal(ctx) : null;
+      if (!owned || goal?.id !== owned || goal.status !== "paused") return undefined;
       if (core.isLatecomer()) return undefined; // core contract: canParkExit() is false, the state stays as the core set it
       const children = childCount(ctx);
       if (children === null) return hold("children-unknown");
@@ -137,8 +140,6 @@ export function install(core) {
         return hold("health-daemon-not-fresh");
       }
 
-      const owned = core.ownedGoalId();
-      const goal = owned ? await core.readGoal(ctx) : null;
       let createdAt = core.now();
       while (fs.existsSync(join(dir(), recordName(sid, createdAt)))) createdAt += 1;
       const parkId = `${sid}-${createdAt}`;

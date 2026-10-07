@@ -94,7 +94,10 @@ export function install(core) {
   const active = () => core.enabled() && core.canWarm() && !core.isLatecomer() && !warmFailed;
 
   async function warmOnce(ctx) {
-    if (!active() || ctx?.isIdle?.() !== true) {
+    // IS-1: a session limitless is not gating (no goal paused by limitless) is never warmed.
+    const owned = core.ownedGoalId();
+    const goal = owned ? await core.readGoal(ctx) : null;
+    if (!owned || goal?.id !== owned || goal.status !== "paused" || !active() || ctx?.isIdle?.() !== true) {
       schedule(true);
       return;
     }
