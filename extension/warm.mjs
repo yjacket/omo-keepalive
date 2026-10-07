@@ -126,6 +126,13 @@ export function install(core) {
     });
   }
 
+  core.onSessionReset?.(() => {
+    timerResetAt = null;
+    warmQueued = false;
+    warmRun = false;
+    warmFailed = false;
+  });
+
   core.onTransition((prev, next) => {
     if (next.parkState !== "park-wait" || next.source === "reactive" || next.warm?.on !== true) {
       stop();
@@ -151,10 +158,6 @@ export function install(core) {
     }
     return undefined;
   });
-
-  core.pi.on("tool_call", () => core.turn?.kind === "warm"
-    ? { block: true, reason: "limitless: tools are disabled in a warm turn" }
-    : undefined);
 
   core.pi.on("agent_end", (event) => {
     if (!warmRun) return;

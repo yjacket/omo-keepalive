@@ -1,5 +1,6 @@
 import { readAuthJson } from "./lane.mjs";
 import { decide } from "./policy.mjs";
+import { accountEntry, epochMs } from "./state.mjs";
 
 const CHECK_MS = 30 * 60 * 1000;
 const MAX_MS = 6 * 60 * 60 * 1000;
@@ -19,19 +20,12 @@ export function install(core) {
   const messageText = (message) => Array.isArray(message?.content)
     ? message.content.map((part) => typeof part === "string" ? part : part?.text ?? "").join(" ")
     : typeof message?.content === "string" ? message.content : "";
-  const accountEntry = () => {
-    const auth = readAuthJson({ env, homeDir, fs });
-    const source = auth?.[provider];
-    return Array.isArray(source?.accounts)
-      ? source.accounts.find((entry) => entry?.name === account)
-      : account === "default" ? source : null;
-  };
   // Only a blockedUntil in the future counts; a stale one is no evidence of a limit.
   const futureBlockedUntil = () => {
-    const blocked = accountEntry()?.blockedUntil;
+    const blocked = accountEntry(readAuthJson({ env, homeDir, fs }), provider, account)?.blockedUntil;
     if (blocked === null || blocked === undefined || blocked === "") return null;
-    const ms = typeof blocked === "number" ? (blocked < 1e12 ? blocked * 1000 : blocked) : Date.parse(blocked);
-    return Number.isFinite(ms) && ms > now() ? ms : null;
+    const ms = epochMs(blocked);
+    return ms !== null && ms > now() ? ms : null;
   };
   const parsedReset = (event) => {
     const blockedMs = futureBlockedUntil();
@@ -43,8 +37,8 @@ export function install(core) {
       if (!field || typeof field !== "object") continue;
       const value = field.resets_at ?? field.reset_at;
       if (value !== undefined) {
-        const ms = typeof value === "number" ? (value < 1e12 ? value * 1000 : value) : Date.parse(value);
-        if (Number.isFinite(ms)) return ms;
+        const ms = epochMs(value);
+        if (ms !== null) return ms;
       }
       const seconds = Number(field.reset_after_seconds);
       if (Number.isFinite(seconds) && seconds >= 0) return now() + seconds * 1000;
@@ -64,13 +58,11 @@ export function install(core) {
   };
   const isLimit = (event) => {
     const diagnostic = event?.message?.providerDiagnostic ?? event?.providerDiagnostic;
-    const family = String(diagnostic?.family ?? diagnostic?.type ?? "").toLowerCase();
     const text = [
       messageText(event?.message), event?.message?.text, event?.message?.error?.message,
       event?.error?.message, event?.error, event?.content, diagnostic?.message, diagnostic?.detail,
     ].filter((x) => typeof x === "string").join(" ");
-    return futureBlockedUntil() !== null || LIMIT_TEXT.test(text)
-      || ((family === "quota" || family === "rate limit" || family === "rate_limit") && LIMIT_TEXT.test(text));
+    return futureBlockedUntil() !== null || LIMIT_TEXT.test(text);
   };
   const release = async (reason, notify = false) => {
     core.timers.clear("reactive-check");
@@ -113,7 +105,17 @@ export function install(core) {
     }
   });
 
+  core.onSessionReset?.(() => {
+    active = false;
+    startedAt = 0;
+    provider = undefined;
+    account = undefined;
+    accounts = [];
+  });
+
   core.pi.on("message_end", async (event, ctx) => {
+    // An off or vetoed session shows no reactive park and arms no timer.
+    if (!core.enabled() || core.isVetoed?.()) return;
     core.lastCtx = ctx;
     const message = event?.message;
     if (message?.role !== "assistant" || !(message.stopReason === "error" || message.error || event?.error)) return;

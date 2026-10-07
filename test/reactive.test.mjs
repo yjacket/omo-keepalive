@@ -387,3 +387,21 @@ test("ROUND 5: a limit error whose resets_at is already past parks without a dea
     assert.deepEqual(h.clock.pendingTimers(), [T0 + 30 * 60000]);
   } finally { h.cleanup(); }
 });
+
+test("epoch seconds (not ms) are accepted for blockedUntil and for resets_at", async () => {
+  for (const viaAuth of [true, false]) {
+    const { h, core } = setup();
+    try {
+      const resetSec = Math.floor((T0 + 2 * 3600000) / 1000);
+      if (viaAuth) {
+        h.writeHomeJson(".omo/agent/auth.json", { "anthropic-subscription": { accounts: [{ name: "default", blockedUntil: resetSec }] } });
+      }
+      await h.fire("session_start", { type: "session_start" });
+      await h.fire("message_end", viaAuth ? FAILED("usage limit reached") : {
+        type: "message_end",
+        message: { role: "assistant", stopReason: "error", content: "usage limit reached", error: { resets_at: resetSec } },
+      });
+      assert.equal(core.state.resetAt, resetSec * 1000);
+    } finally { h.cleanup(); }
+  }
+});

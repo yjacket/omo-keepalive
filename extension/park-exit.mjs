@@ -7,23 +7,32 @@
 //   -> goal limitless paused set back to active -> ctx.shutdown().
 //   Any missing condition holds the session in park-wait without warming; todo 7 resumes it at reset.
 // Relaunch path (session_start with own state parkState "exited"):
-//   exclusive start claim <parksDir>/<sid>.<parkId>.start ({pid}); a live foreign claim -> write nothing,
-//   ctx.shutdown(). Otherwise write the ack file, count re-parks, kick a cap-suppressed goal.
+//   exclusive start claim <parksDir>/<sid>.<parkId>.start ({pid, startedAt, at}); a live foreign claim -> write
+//   nothing, one notification, ctx.shutdown(). Otherwise write the ack file, count re-parks, kick a
+//   cap-suppressed goal. After the ack, parkExit.parkId is cleared and parkExit.claimFile names the claim this
+//   process holds; the claim file is removed (and claimFile cleared) at session reset/shutdown. A later
+//   session_start with claimFile set only checks that one claim (duplicate copy of a running session); a stale
+//   one is removed and forgotten.
+// A claim is live only when its pid is alive, is not ours, and the pid's process start time matches the
+// recorded startedAt. When either start time is unknown, only a claim younger than CLAIM_FRESH_MS counts.
 //
-// deps used (all optional): pid, isPidAlive(pid), selfLaunch {register({sessionId,cwd,at,parkId}) ->
+// deps used (all optional): pid, isPidAlive(pid), processStartTime(pid) -> ms|null (sync or async), selfLaunch {register({sessionId,cwd,at,parkId}) ->
 // {ok, selfTask?, reason?}, unregister({sessionId, selfTask})}. Defaults to ./selflaunch.mjs (todo 14); a register
 // that throws or returns ok:false keeps an unknown terminal in park-wait.
+import { execFile } from "node:child_process";
 import * as nodeFs from "node:fs";
 import { join } from "node:path";
-import { createSenpiGoalStore } from "./core.mjs";
+import { SPAWN_TOOLS } from "./core.mjs";
 import { selfLaunch as realSelfLaunch } from "./selflaunch.mjs";
 import { readJson, sanitizeId, writeJsonAtomic } from "./state.mjs";
 
 export const DAEMON_STALE_MS = 45_000; // omo-health/extension/sensor.mjs:23,310
 export const RELAUNCH_REPARK_LIMIT = 3;
+export const CLAIM_FRESH_MS = 5 * 60_000; // relaunch window: a claim this young counts even without a start time
+const START_TOLERANCE_MS = 2000;
+const PROBE_TIMEOUT_MS = 5000;
 const GOAL_CONTINUATION_CAP = 8; // senpi goal/index.js:140-148
 const CHILD_WAKE_SOURCES = new Set(["senpi-task", "omo-dag"]); // omo-rollover/extension/rollover.ts:27
-const SPAWN_TOOLS = new Set(["task", "task_create"]);
 const TIMER = "park-exit";
 
 export const parksDir = (env, homeDir) => join(env.OMO_HEALTH_HOME || join(homeDir, ".omo-health"), "parks");
@@ -46,6 +55,26 @@ export function daemonFresh({ env, homeDir, now, fs = nodeFs }) {
   if (fs.existsSync(join(healthHome, "stopped"))) return false;
   const daemon = readJson(join(healthHome, "daemon.json"), fs);
   return Boolean(daemon) && Number.isFinite(daemon.ts) && now - daemon.ts <= DAEMON_STALE_MS && !daemon.stoppedMs;
+}
+
+// OS process creation time in epoch ms, or null when unknown (probe failed or timed out). Never throws.
+export function defaultProcessStartTime(pid) {
+  if (!Number.isInteger(pid) || pid <= 0) return Promise.resolve(null);
+  return new Promise((resolve) => {
+    const done = (error, stdout) => {
+      const ms = error ? NaN : Date.parse(String(stdout).trim());
+      resolve(Number.isFinite(ms) ? ms : null);
+    };
+    try {
+      if (process.platform === "win32") {
+        execFile("powershell.exe", ["-NoProfile", "-NonInteractive", "-Command",
+          `(Get-Process -Id ${pid} -ErrorAction Stop).StartTime.ToUniversalTime().ToString('o')`],
+        { timeout: PROBE_TIMEOUT_MS, windowsHide: true }, done);
+      } else {
+        execFile("ps", ["-o", "lstart=", "-p", String(pid)], { timeout: PROBE_TIMEOUT_MS }, done);
+      }
+    } catch { resolve(null); }
+  });
 }
 
 function defaultPidAlive(pid) {
@@ -72,7 +101,14 @@ export function install(core) {
   const env = core.env;
   const pid = core.deps.pid ?? process.pid;
   const isPidAlive = core.deps.isPidAlive ?? defaultPidAlive;
-  const goalStore = core.deps.goalStore ?? createSenpiGoalStore({ env });
+  const processStartTime = core.deps.processStartTime ?? defaultProcessStartTime;
+  const startTimeOf = async (p) => {
+    try {
+      const ms = await processStartTime(p);
+      return Number.isFinite(ms) ? ms : null;
+    } catch { return null; }
+  };
+  let ownStart; // memoized promise of this process's start time
   const selfLaunch = core.deps.selfLaunch ?? realSelfLaunch;
   const wake = new Map();
   let spawnSeen = false;
@@ -166,58 +202,94 @@ export function install(core) {
       core.timers.clear(TIMER);
       core.persist();
       if (goal?.status === "paused" && goal.id === owned) {
-        try { await goalStore.setStatus(ctx, "active"); } catch (error) { core.recordError("park-exit-goal", error); }
+        try { await core.setGoalStatus(ctx, "active"); } catch (error) { core.recordError("park-exit-goal", error); }
       }
       ctx.shutdown();
     })().finally(() => { busy = null; });
     return busy;
   }
 
-  function takeClaim(path) {
+  // Returns the claim's holder when it is a live foreign process, else null (missing, ours, dead, or a reused pid).
+  async function liveHolder(path) {
+    const holder = readJson(path, fs);
+    if (!Number.isInteger(holder?.pid) || holder.pid === pid || !isPidAlive(holder.pid)) return null;
+    const actual = Number.isFinite(holder.startedAt) ? await startTimeOf(holder.pid) : null;
+    if (actual !== null) return Math.abs(actual - holder.startedAt) <= START_TOLERANCE_MS ? holder : null;
+    const age = core.now() - holder.at;
+    return Number.isFinite(age) && age >= 0 && age <= CLAIM_FRESH_MS ? holder : null;
+  }
+
+  // {won:true} or {won:false, holder}. Exclusive create ("wx"); a stale claim is replaced once.
+  async function takeClaim(path) {
+    ownStart ??= startTimeOf(pid);
+    const body = JSON.stringify({ pid, startedAt: await ownStart, at: core.now() });
+    let holder = null;
     for (let round = 0; round < 2; round++) {
       try {
         const fd = fs.openSync(path, "wx");
-        try { fs.writeSync(fd, JSON.stringify({ pid })); } finally { fs.closeSync(fd); }
-        return true;
+        try { fs.writeSync(fd, body); } finally { fs.closeSync(fd); }
+        return { won: true };
       } catch (error) {
         if (error?.code !== "EEXIST") throw error;
       }
-      const holder = readJson(path, fs);
-      if (Number.isInteger(holder?.pid) && holder.pid !== pid && isPidAlive(holder.pid)) return false;
+      holder = await liveHolder(path);
+      if (holder) return { won: false, holder };
       try { fs.unlinkSync(path); } catch {}
     }
-    return false;
+    return { won: false, holder };
   }
 
-  function liveForeignClaim(path) {
-    const holder = readJson(path, fs);
-    return Number.isInteger(holder?.pid) && holder.pid !== pid && isPidAlive(holder.pid);
+  function releaseOwnClaim() {
+    if (!ownClaim) return;
+    try { fs.unlinkSync(join(dir(), ownClaim)); } catch {}
+    if (core.state.parkExit?.claimFile === ownClaim) {
+      core.state.parkExit.claimFile = null;
+      core.persist();
+    }
+    ownClaim = null;
   }
+
+  const writeOrRecord = (path, data) => {
+    const ok = writeJsonAtomic(path, data, fs);
+    if (!ok) core.writeFailed(path);
+    return ok;
+  };
 
   // Start claim, run by the core BEFORE it persists, polls, parks or pauses anything (core.onBeforeSessionStart).
   // A losing duplicate vetoes: the core writes nothing for the rest of this process, and we shut down.
   let relaunchFrom = null; // prior parkExit of a won relaunch claim, consumed by the session_start boundary
-  core.onBeforeSessionStart((_event, ctx) => {
+  core.onBeforeSessionStart(async (_event, ctx) => {
     const start = core.startState;
     const prior = start?.parkExit;
-    if (!prior?.parkId) return undefined;
-    const claimPath = join(dir(), startName(core.sessionId, prior.parkId));
-    let won;
-    if (start.parkState !== "exited") {
-      // A copy opened while the relaunched session still runs: one live session only.
-      won = !liveForeignClaim(claimPath);
-    } else {
+    let holder = null;
+    if (start?.parkState === "exited" && prior?.parkId) {
+      const name = startName(core.sessionId, prior.parkId);
+      let won;
       try {
         fs.mkdirSync(dir(), { recursive: true });
-        won = takeClaim(claimPath);
+        ({ won, holder } = await takeClaim(join(dir(), name)));
       } catch (error) {
         core.recordError("park-exit-claim", error);
         won = true; // the claim is the last line of defence; an unwritable dir must not strand the session
       }
-      if (won) { ownClaim = claimPath; relaunchFrom = prior; }
+      if (won) { ownClaim = name; relaunchFrom = prior; return undefined; }
+    } else {
+      // A copy opened while the relaunched session still runs: one live session only. A state written before
+      // claimFile existed still carries the parkId of its last relaunch.
+      const name = prior?.claimFile ?? (prior?.parkId ? startName(core.sessionId, prior.parkId) : null);
+      if (!name) return undefined;
+      holder = await liveHolder(join(dir(), name));
+      if (!holder) {
+        // Crashed or cleanly gone claimant (possibly a reused pid): forget the claim for good.
+        try { fs.unlinkSync(join(dir(), name)); } catch {}
+        core.state.parkExit = { ...core.state.parkExit, parkId: null, claimFile: null };
+        return undefined;
+      }
     }
-    if (won) return undefined;
     exited = {};
+    core.notify(holder
+      ? `limitless: 이 세션은 이미 다른 프로세스(pid ${holder.pid})에서 열려 있어 이 창을 닫습니다.`
+      : "limitless: 이 세션의 재실행 시작 권한을 얻지 못해 이 창을 닫습니다.", "warning");
     ctx.shutdown();
     return { veto: true };
   });
@@ -226,14 +298,17 @@ export function install(core) {
     const prior = relaunchFrom;
     relaunchFrom = null;
     if (!prior) return;
-    writeJsonAtomic(join(dir(), ackName(core.sessionId, prior.createdAt)),
-      { v: 1, parkId: prior.parkId, sessionId: core.sessionId, pid, at: core.now() }, fs);
+    writeOrRecord(join(dir(), ackName(core.sessionId, prior.createdAt)),
+      { v: 1, parkId: prior.parkId, sessionId: core.sessionId, pid, at: core.now() });
     if (prior.terminalKind === "self" && prior.selfTask) {
       try { await selfLaunch.unregister({ sessionId: core.sessionId, selfTask: prior.selfTask }); }
       catch (error) { core.recordError("park-exit-unregister", error); }
     }
     const p = my();
     p.resumedFrom = prior.parkId;
+    // The relaunch is done: later starts check only the claim this process holds (cleared at reset).
+    p.parkId = null;
+    p.claimFile = ownClaim;
     if (core.state.parkState === "exited") core.state.parkState = "ok";
     if (core.isParked()) {
       const count = Number(prior.relaunchReparks) || 0;
@@ -258,7 +333,7 @@ export function install(core) {
   // After RELAUNCH_REPARK_LIMIT consecutive re-parks right after relaunch: switch limitless off for this
   // session through the control file (todo 9 contract), release the park, and notify once.
   async function stopReparking() {
-    writeJsonAtomic(join(core.homeDir, ".omo", "limitless", "control", `${sanitizeId(core.sessionId)}.json`), { v: 1, mode: "off" }, fs);
+    writeOrRecord(join(core.homeDir, ".omo", "limitless", "control", `${sanitizeId(core.sessionId)}.json`), { v: 1, mode: "off" });
     core.state.mode = "off";
     await core.release({ reason: "relaunch-loop" });
     await core.releaseOwnedGoal({ reason: "relaunch-loop", text: core.texts.resetResume });
@@ -276,10 +351,14 @@ export function install(core) {
     return undefined;
   });
 
-  core.pi.on("session_shutdown", () => {
-    if (!ownClaim) return;
-    try { fs.unlinkSync(ownClaim); } catch {}
-    ownClaim = null;
+  // session_shutdown or a session switch (core.onSessionReset): release the claim, forget per-session closures.
+  core.onSessionReset(() => {
+    releaseOwnClaim();
+    wake.clear();
+    spawnSeen = false;
+    busy = null;
+    exited = null;
+    relaunchFrom = null;
   });
 
   core.onTransition((_prev, next) => {

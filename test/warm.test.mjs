@@ -73,7 +73,7 @@ function fixture({
 
 const warmUsage = { input: 100, cacheRead: 1000, cacheWrite: 20, output: 8 };
 
-test("Claude warm timer repeats at the configured interval and blocks warm-turn tools", async (t) => {
+test("Claude warm timer repeats at the configured interval", async (t) => {
   const h = fixture();
   t.after(() => h.cleanup());
   await Promise.all(h.transitions.map((fn) => fn({}, h.core.state)));
@@ -85,7 +85,7 @@ test("Claude warm timer repeats at the configured interval and blocks warm-turn 
     display: false,
   });
   const run = await h.runQueuedWarm({ usage: warmUsage, toolNames: ["exec", "task"] });
-  assert.deepEqual(run.blocks.map((item) => item?.block), [true, true]);
+  assert.deepEqual(run.blocks, [], "tool blocking in a warm turn is the core's job (real-core test below)");
   assert.equal(h.timers.get("warm").at, 110 * 60_000);
   const rows = readFileSync(join(h.homeDir, ".omo", "limitless", "events.jsonl"), "utf8").trim().split("\n");
   assert.deepEqual(JSON.parse(rows[0]), {
@@ -293,4 +293,15 @@ test("E1: removing the owned goal while parked stops further warm turns", async 
   assert.equal(core.ownedGoalId(), "g2");
   await h.clock.tick(55 * 60_000);
   assert.equal(h.sentMessages.filter((item) => item.msg?.customType === "limitless-warm").length, 2);
+});
+
+test("real core blocks every tool in a warm turn (no warm.mjs tool_call handler needed)", async (t) => {
+  const { h } = realCore({ readUsage: () => snapshot(95, T0 + 3 * 3600_000) });
+  t.after(() => h.cleanup());
+  await h.fire("session_start", {});
+  await h.clock.tick(55 * 60_000);
+  assert.equal(h.queuedTurns.length, 1, "a warm turn is queued");
+  const [turn] = await h.runQueuedTurns(["exec", "task"]);
+  assert.deepEqual(turn.executed, []);
+  assert.deepEqual(turn.blocked.map((item) => item.toolName), ["exec", "task"]);
 });

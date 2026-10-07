@@ -1,10 +1,11 @@
 import test from "node:test";
 import assert from "node:assert/strict";
+import * as nodeFs from "node:fs";
 import { existsSync, readdirSync, readFileSync, writeFileSync, mkdirSync } from "node:fs";
 import { join } from "node:path";
 import { createHarness } from "./harness.mjs";
 import { startLimitless } from "../extension/limitless.mjs";
-import { ackName, parksDir, recordName, startName, RELAUNCH_REPARK_LIMIT } from "../extension/park-exit.mjs";
+import { ackName, CLAIM_FRESH_MS, parksDir, recordName, startName, RELAUNCH_REPARK_LIMIT } from "../extension/park-exit.mjs";
 
 const T0 = Date.UTC(2026, 9, 7, 3, 0, 0);
 const RESET = T0 + 5 * 3600000; // beyond the 4h Claude wait limit -> park-exit
@@ -24,7 +25,7 @@ const snap = (utilization, resetAt = RESET) => ({
 
 // One senpi process. `util` may be a function so a test can move usage between polls.
 function proc({ util = 95, now = T0, homeDir, env = ORCA, branch = PRIOR_TURN, goal = GOAL, daemon = "fresh",
-  pid = 1001, alive = new Set([1001, 1002]), selfLaunch, usage, extra = {} } = {}) {
+  pid = 1001, alive = new Set([1001, 1002]), selfLaunch, usage, startOf = (p) => startTime(p), extra = {} } = {}) {
   const h = createHarness({ model: CLAUDE, branch, goal, now, homeDir, env });
   h.writeHomeJson(".omo/agent/auth.json", { "anthropic-subscription": { access: "not-a-real-token" } });
   if (daemon === "fresh") h.writeHomeJson(".omo-health/daemon.json", { ts: now - 5000, pid: 77 });
@@ -32,7 +33,8 @@ function proc({ util = 95, now = T0, homeDir, env = ORCA, branch = PRIOR_TURN, g
   const goalAtShutdown = [];
   h.ctx.shutdown = () => { h.shutdownCalls.push(true); goalAtShutdown.push(h.goalStore.goal?.status ?? null); };
   const reader = async () => (usage ? usage() : snap(typeof util === "function" ? util() : util));
-  const core = startLimitless(h.pi, h.deps({ readUsage: reader, pid, isPidAlive: (p) => alive.has(p), selfLaunch, ...extra }));
+  const core = startLimitless(h.pi, h.deps({ readUsage: reader, pid, isPidAlive: (p) => alive.has(p), selfLaunch,
+    processStartTime: startOf, ...extra }));
   const dir = parksDir({}, h.tmpHome);
   const records = () => (existsSync(dir) ? readdirSync(dir).filter((f) => f.endsWith(".park.json")).sort() : []);
   const listing = () => (existsSync(dir) ? readdirSync(dir).sort() : []);
@@ -41,6 +43,10 @@ function proc({ util = 95, now = T0, homeDir, env = ORCA, branch = PRIOR_TURN, g
   const wake = (activeCount, source = "senpi-task") => h.pi.events.emit("wake_source_state", { source, activeCount, channels: [] });
   return { h, core, dir, records, listing, read, start, wake, goalAtShutdown };
 }
+
+// Fake OS process creation time per pid (the real probe asks PowerShell / ps).
+const startTime = (p) => 1_000_000 + p;
+const claimOf = (p, at) => ({ pid: p, startedAt: startTime(p), at });
 
 // Minimal omo-health stand-in (todo 11 owns the real one): writes only the episode file it processes,
 // by exact name, and completes an episode whose ack carries the same parkId.
@@ -276,6 +282,19 @@ test("relaunch: session_start with parkState exited writes the ack and resumes t
     assert.equal(second.read(name).status, "claimed"); // limitless never touches the record after writing it
     assert.ok(existsSync(join(first.dir, startName("s1", `s1-${T0}`))));
     assert.equal(second.records().length, 1);
+    // The relaunch is finished: parkId is cleared, the held claim is named, and a clean shutdown drops both.
+    const parkExit = second.h.readHomeJson(".omo/limitless/state/s1.json").parkExit;
+    assert.equal(parkExit.parkId, null);
+    assert.equal(parkExit.claimFile, startName("s1", `s1-${T0}`));
+    await second.h.fire("session_shutdown", { type: "session_shutdown" });
+    assert.equal(existsSync(join(first.dir, startName("s1", `s1-${T0}`))), false);
+    assert.equal(second.h.readHomeJson(".omo/limitless/state/s1.json").parkExit.claimFile, null);
+    // A later open runs no claim check at all: even a live pid 1002 with any start time cannot veto it.
+    const reopen = proc({ homeDir: first.h.tmpHome, now: RESET + 3600000, util: 10, pid: 1003,
+      alive: new Set([1002, 1003]), goal: second.h.goalStore.goal });
+    await reopen.start();
+    assert.equal(reopen.h.shutdownCalls.length, 0);
+    assert.equal(reopen.core.isVetoed(), false);
   } finally { first.h.cleanup(); }
 });
 
@@ -338,7 +357,9 @@ test("two instances for the same sid and parkId (sequential): the first claims a
     assert.equal(a.h.shutdownCalls.length, 0);
     assert.equal(b.h.shutdownCalls.length, 1);
     assert.equal(JSON.parse(before[ackName("s1", T0)]).pid, 1001);
-    assert.deepEqual(JSON.parse(before[startName("s1", `s1-${T0}`)]), { pid: 1001 });
+    assert.deepEqual(JSON.parse(before[startName("s1", `s1-${T0}`)]), claimOf(1001, RESET + 120000));
+    assert.deepEqual(b.h.notifications.map((n) => n.level), ["warning"], "a veto shuts down with one notification");
+    assert.match(b.h.notifications[0].text, /pid 1001/);
   } finally { first.h.cleanup(); }
 });
 
@@ -380,7 +401,9 @@ test("two instances start concurrently: exactly one claims and acks, the other s
     assert.equal(a.h.shutdownCalls.length + b.h.shutdownCalls.length, 1);
     const winner = a.h.shutdownCalls.length === 0 ? 1001 : 1002;
     assert.equal(JSON.parse(readFileSync(join(a.dir, ackName("s1", T0)), "utf8")).pid, winner);
-    assert.deepEqual(JSON.parse(readFileSync(join(a.dir, startName("s1", `s1-${T0}`)), "utf8")), { pid: winner });
+    assert.deepEqual(JSON.parse(readFileSync(join(a.dir, startName("s1", `s1-${T0}`)), "utf8")), claimOf(winner, RESET + 120000));
+    const loser = winner === 1001 ? b : a;
+    assert.equal(loser.h.notifications.filter((n) => n.level === "warning").length, 1);
   } finally { first.h.cleanup(); }
 });
 
@@ -391,8 +414,78 @@ test("a start claim held by a dead pid is replaced", async () => {
     const b = proc({ homeDir: first.h.tmpHome, now: RESET + 120000, util: 10, pid: 1002, goal: first.h.goalStore.goal });
     await b.start();
     assert.equal(b.h.shutdownCalls.length, 0);
-    assert.deepEqual(JSON.parse(readFileSync(join(b.dir, startName("s1", `s1-${T0}`)), "utf8")), { pid: 1002 });
+    assert.deepEqual(JSON.parse(readFileSync(join(b.dir, startName("s1", `s1-${T0}`)), "utf8")), claimOf(1002, RESET + 120000));
     assert.equal(JSON.parse(readFileSync(join(b.dir, ackName("s1", T0)), "utf8")).pid, 1002);
+  } finally { first.h.cleanup(); }
+});
+
+// N1: the relaunched session crashed (no session_shutdown, so its .start file and claimFile stay) and Windows
+// reused its pid for an unrelated live process.
+async function crashedRelaunch() {
+  const first = await exitOnce();
+  const relaunched = proc({ homeDir: first.h.tmpHome, now: RESET + 120000, util: 10, pid: 1002, goal: first.h.goalStore.goal });
+  await relaunched.start(); // acks, holds the claim; then "crashes" without session_shutdown
+  assert.equal(relaunched.h.readHomeJson(".omo/limitless/state/s1.json").parkExit.claimFile, startName("s1", `s1-${T0}`));
+  return { first, relaunched, claim: join(first.dir, startName("s1", `s1-${T0}`)) };
+}
+
+test("N1: a crashed relaunch's claim whose pid was reused (start time differs) is stale: the session opens and forgets it", async () => {
+  const { first, relaunched, claim } = await crashedRelaunch();
+  try {
+    const reopen = proc({ homeDir: first.h.tmpHome, now: RESET + 3 * 3600000, util: 10, pid: 1003,
+      alive: new Set([1002, 1003]), startOf: (p) => (p === 1002 ? 42 : startTime(p)), goal: relaunched.h.goalStore.goal });
+    await reopen.start();
+    assert.equal(reopen.h.shutdownCalls.length, 0);
+    assert.equal(reopen.core.isVetoed(), false);
+    assert.equal(existsSync(claim), false, "stale claim removed");
+    const parkExit = reopen.h.readHomeJson(".omo/limitless/state/s1.json").parkExit;
+    assert.equal(parkExit.claimFile, null);
+    assert.equal(parkExit.parkId, null);
+  } finally { first.h.cleanup(); }
+});
+
+test("N1: a claim whose live pid matches its start time still vetoes a duplicate, with one notification", async () => {
+  const { first, relaunched, claim } = await crashedRelaunch();
+  try {
+    const dup = proc({ homeDir: first.h.tmpHome, now: RESET + 3 * 3600000, util: 10, pid: 1003,
+      alive: new Set([1002, 1003]), goal: relaunched.h.goalStore.goal });
+    await dup.start();
+    assert.equal(dup.h.shutdownCalls.length, 1);
+    assert.equal(dup.h.notifications.length, 1);
+    assert.equal(existsSync(claim), true);
+  } finally { first.h.cleanup(); }
+});
+
+test("N1: unknown start time -> a claim counts only inside the relaunch window", async () => {
+  const { first, relaunched, claim } = await crashedRelaunch();
+  try {
+    const unknown = { startOf: () => null, alive: new Set([1002, 1003]), util: 10, pid: 1003, homeDir: first.h.tmpHome,
+      goal: relaunched.h.goalStore.goal };
+    const young = proc({ ...unknown, now: RESET + 120000 + CLAIM_FRESH_MS });
+    await young.start();
+    assert.equal(young.h.shutdownCalls.length, 1, "young claim with unknown start time is live");
+    const old = proc({ ...unknown, now: RESET + 120000 + CLAIM_FRESH_MS + 1 });
+    await old.start();
+    assert.equal(old.h.shutdownCalls.length, 0, "old claim with unknown start time is stale");
+    assert.equal(existsSync(claim), false);
+  } finally { first.h.cleanup(); }
+});
+
+test("N6: a failed ack write is recorded in state.lastError {where:'write', path}", async () => {
+  const first = await exitOnce();
+  try {
+    const ackPath = join(first.dir, ackName("s1", T0));
+    const failing = { ...nodeFs, renameSync: (from, to) => {
+      if (to === ackPath) throw Object.assign(new Error("disk full"), { code: "ENOSPC" });
+      return nodeFs.renameSync(from, to);
+    } };
+    const second = proc({ homeDir: first.h.tmpHome, now: RESET + 120000, util: 10, pid: 1002,
+      goal: first.h.goalStore.goal, extra: { fs: failing } });
+    await second.start();
+    assert.equal(existsSync(ackPath), false);
+    const lastError = second.h.readHomeJson(".omo/limitless/state/s1.json").lastError;
+    assert.equal(lastError?.where, "write");
+    assert.equal(lastError?.path, ackPath);
   } finally { first.h.cleanup(); }
 });
 

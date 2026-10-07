@@ -41,6 +41,7 @@ export function install(core) {
     schedule();
   };
 
+  core.onSessionReset?.(() => { recheck = false; });
   core.onTransition((_prev, next) => {
     if (next.parkState === "park-wait") schedule();
     else clear();
