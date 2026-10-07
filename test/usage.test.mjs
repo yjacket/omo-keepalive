@@ -1,7 +1,9 @@
 import assert from "node:assert/strict";
-import { readFile } from "node:fs/promises";
 import test from "node:test";
-import { clearUsageCache, listAccounts, readUsage } from "../extension/usage.mjs";
+import { EventEmitter } from "node:events";
+import { readFile } from "node:fs/promises";
+import { PassThrough } from "node:stream";
+import { clearUsageCache, readUsage } from "../extension/usage.mjs";
 
 const fixture = async (name) => JSON.parse(await readFile(new URL(`./fixtures/usage/${name}.json`, import.meta.url), "utf8"));
 const jsonResponse = (body, status = 200) => ({ status, text: async () => JSON.stringify(body) });
@@ -41,6 +43,22 @@ test("maps Claude response and sends the expected endpoint headers", async () =>
   assert.equal(requests[1].options.headers.Authorization, "Bearer account-token");
 });
 
+test("profile identity request does not pass the account name as account ID", async () => {
+  const requests = [];
+  await readUsage({ provider: "anthropic-subscription", account: "work" }, {
+    env: { OMO_LIMITLESS_AUTH_PATH: "/identity-auth" },
+    fs: baseFs({ "/identity-auth": JSON.stringify({ "anthropic-subscription": { accounts: [{ name: "work", access: "token" }] } }) }),
+    fetch: async (url, options) => {
+      requests.push({ url, options });
+      return jsonResponse(url.endsWith("/usage")
+        ? { five_hour: { utilization: 4, resets_at: 1791354600 } }
+        : { account: { uuid: "uuid" } });
+    },
+    now: () => Date.now() + 100001,
+  });
+  assert.equal(requests[1].options.headers["chatgpt-account-id"], undefined);
+});
+
 test("maps Codex weekly window and tolerates null secondary", async () => {
   const result = await readUsage({ provider: "chatgpt-subscription", account: "default" }, {
     env: { OMO_LIMITLESS_AUTH_PATH: "/auth.json" },
@@ -54,12 +72,6 @@ test("maps Codex weekly window and tolerates null secondary", async () => {
   });
   assert.deepEqual(result.windows, [{ kind: "seven_day", utilization: 0, resetAt: 1791892800000 }]);
   assert.equal(result.source, "endpoint");
-});
-
-test("lists pool names, flat defaults, and missing providers", () => {
-  assert.deepEqual(listAccounts({ p: { accounts: [{ name: "a" }, { name: "b" }] } }, "p"), ["a", "b"]);
-  assert.deepEqual(listAccounts({ p: { access: "token" } }, "p"), ["default"]);
-  assert.deepEqual(listAccounts({}, "p"), []);
 });
 
 test("401 uses Claude Code only for a matching account UUID", async () => {
@@ -87,7 +99,7 @@ test("401 uses Claude Code only for a matching account UUID", async () => {
       }
       return jsonResponse(usage);
     },
-    spawnSync: () => { throw new Error("CodexBar should not run"); },
+    spawn: () => { throw new Error("CodexBar should not run"); },
     now: () => Date.now() + 300000,
   });
   assert.equal(result.source, "claude-code");
@@ -101,11 +113,11 @@ test("401 falls through Claude Code, CodexBar, then none", async () => {
     env: { OMO_LIMITLESS_AUTH_PATH: "/auth-1" },
     fs: baseFs({ "/auth-1": JSON.stringify({ "anthropic-subscription": { access: "token" } }) }),
     fetch: async () => jsonResponse({}, 401),
-    spawnSync: () => { spawnCount++; return { status: 0, stdout: JSON.stringify(awaitableError) }; },
+    spawn: () => { spawnCount++; throw new Error("CodexBar unavailable"); },
     now: () => Date.now() + 400000,
   });
   assert.equal(first.source, "none");
-  assert.equal(spawnCount, 1);
+  assert.equal(spawnCount, process.platform === "win32" ? 2 : 1);
 
   const claudeFallback = await readUsage({ provider: "anthropic-subscription", account: "default" }, {
     env: { OMO_LIMITLESS_AUTH_PATH: "/auth-claude-chain" },
@@ -120,7 +132,7 @@ test("401 falls through Claude Code, CodexBar, then none", async () => {
     fetch: async (_url, options) => options.headers.Authorization === "Bearer senpi"
       ? jsonResponse({}, 401)
       : jsonResponse({}, 401),
-    spawnSync: () => ({ status: 0, stdout: JSON.stringify(awaitableError) }),
+    spawn: () => { throw new Error("CodexBar unavailable"); },
     now: () => Date.now() + 450000,
   });
   assert.equal(claudeFallback.source, "none");
@@ -129,7 +141,7 @@ test("401 falls through Claude Code, CodexBar, then none", async () => {
     env: { OMO_LIMITLESS_AUTH_PATH: "/auth-2" },
     fs: baseFs({ "/auth-2": JSON.stringify({ "chatgpt-subscription": { access: "token", accountId: "id" } }) }),
     fetch: async () => jsonResponse({}, 401),
-    spawnSync: () => ({ status: 0, stdout: JSON.stringify(awaitableError) }),
+    spawn: () => { throw new Error("CodexBar unavailable"); },
     now: () => Date.now() + 500000,
   });
   assert.equal(codex.source, "none");
@@ -141,7 +153,7 @@ test("expired credentials skip the endpoint and use the fallback chain", async (
     env: { OMO_LIMITLESS_AUTH_PATH: "/auth-expired" },
     fs: baseFs({ "/auth-expired": JSON.stringify({ "chatgpt-subscription": { access: "expired", accountId: "id", expires: 1 } }) }),
     fetch: async () => { fetchCalls++; throw new Error("expired token must not be sent"); },
-    spawnSync: () => ({ status: 1 }),
+    spawn: () => { throw new Error("CodexBar unavailable"); },
     now: () => Date.now() + 1000000,
   });
   assert.equal(fetchCalls, 0);
@@ -149,23 +161,109 @@ test("expired credentials skip the endpoint and use the fallback chain", async (
   assert.match(result.error, /expired/);
 });
 
-const awaitableError = { error: "not usage" };
-
 test("CodexBar successful output is identified as its source", async () => {
   const body = await fixture("codex");
   const result = await readUsage({ provider: "chatgpt-subscription", account: "default" }, {
     env: { OMO_LIMITLESS_AUTH_PATH: "/auth-codexbar" },
     fs: baseFs({ "/auth-codexbar": JSON.stringify({ "chatgpt-subscription": { access: "t", accountId: "id" } }) }),
     fetch: async () => jsonResponse({}, 401),
-    spawnSync: (command, args, options) => {
+    spawn: (command, args, options) => {
       assert.equal(command, "codexbar-cli");
       assert.deepEqual(args, ["usage", "-p", "codex", "--json"]);
-      assert.equal(options.timeout, 10000);
-      return { status: 0, stdout: JSON.stringify(body) };
+      assert.equal(options.windowsHide, true);
+      const child = new EventEmitter();
+      child.kill = () => {};
+      child.stdout = new PassThrough();
+      queueMicrotask(() => {
+        child.stdout.end(JSON.stringify(body));
+        child.emit("close", 0);
+      });
+      return child;
     },
     now: () => Date.now() + 600000,
   });
   assert.equal(result.source, "codexbar");
+});
+
+test("CodexBar resolves the Windows shim after a missing extensionless command", async () => {
+  const body = await fixture("codex");
+  const commands = [];
+  const result = await readUsage({ provider: "chatgpt-subscription", account: "default" }, {
+    platform: "win32",
+    env: { OMO_LIMITLESS_AUTH_PATH: "/auth-codexbar-windows", ComSpec: "C:\\Windows\\System32\\cmd.exe" },
+    fs: baseFs({ "/auth-codexbar-windows": JSON.stringify({ "chatgpt-subscription": { access: "t", accountId: "id" } }) }),
+    fetch: async () => jsonResponse({}, 401),
+    resolveCommand: (command) => `C:\\bin\\${command}`,
+    spawn: (command, args, options) => {
+      commands.push(command);
+      if (command === "codexbar-cli") throw Object.assign(new Error("invalid"), { code: "EINVAL" });
+      const child = new EventEmitter();
+      assert.equal(command, "C:\\Windows\\System32\\cmd.exe");
+      assert.deepEqual(args, ["/d", "/s", "/c", '""C:\\bin\\codexbar-cli.cmd" usage -p codex --json"']);
+      assert.equal(options.windowsVerbatimArguments, true);
+      child.stdout = new PassThrough();
+      child.kill = () => {};
+      queueMicrotask(() => {
+        child.stdout.end(JSON.stringify(body));
+        child.emit("close", 0);
+      });
+      return child;
+    },
+    now: () => Date.now() + 600001,
+  });
+  assert.deepEqual(commands, ["codexbar-cli", "C:\\Windows\\System32\\cmd.exe"]);
+  assert.equal(result.source, "codexbar");
+});
+
+test("CodexBar quotes Windows shim paths containing spaces", async () => {
+  const body = await fixture("codex");
+  const result = await readUsage({ provider: "chatgpt-subscription", account: "default" }, {
+    platform: "win32",
+    env: { OMO_LIMITLESS_AUTH_PATH: "/auth-codexbar-space", ComSpec: "C:\\Windows\\System32\\cmd.exe" },
+    fs: baseFs({ "/auth-codexbar-space": JSON.stringify({ "chatgpt-subscription": { access: "t", accountId: "id" } }) }),
+    fetch: async () => jsonResponse({}, 401),
+    resolveCommand: () => "C:\\tmp\\cv5 probe sp\\codexbar-cli.cmd",
+    spawn: (command, args, options) => {
+      if (command === "codexbar-cli") throw Object.assign(new Error("invalid"), { code: "EINVAL" });
+      assert.equal(command, "C:\\Windows\\System32\\cmd.exe");
+      assert.deepEqual(args, ["/d", "/s", "/c", '""C:\\tmp\\cv5 probe sp\\codexbar-cli.cmd" usage -p codex --json"']);
+      assert.equal(options.windowsVerbatimArguments, true);
+      const child = new EventEmitter();
+      child.stdout = new PassThrough();
+      child.kill = () => {};
+      queueMicrotask(() => {
+        child.stdout.end(JSON.stringify(body));
+        child.emit("close", 0);
+      });
+      return child;
+    },
+    now: () => Date.now() + 600002,
+  });
+  assert.equal(result.source, "codexbar");
+});
+
+test("CodexBar timeout kills the child process", async () => {
+  let killed = false;
+  const result = await readUsage({ provider: "chatgpt-subscription", account: "default" }, {
+    env: { OMO_LIMITLESS_AUTH_PATH: "/auth-codexbar-timeout" },
+    fs: baseFs({ "/auth-codexbar-timeout": JSON.stringify({ "chatgpt-subscription": { access: "t", accountId: "id" } }) }),
+    fetch: async () => jsonResponse({}, 401),
+    spawn: () => {
+      const child = new EventEmitter();
+      child.stdout = new PassThrough();
+      child.kill = () => { killed = true; };
+      return child;
+    },
+    setTimeout: (callback, ms) => {
+      assert.equal(ms, 10000);
+      queueMicrotask(callback);
+      return 1;
+    },
+    clearTimeout: () => {},
+    now: () => Date.now() + 600002,
+  });
+  assert.equal(killed, true);
+  assert.equal(result.source, "none");
 });
 
 test("malformed successful body and string utilization do not fabricate endpoint data", async () => {
@@ -194,7 +292,7 @@ test("credential paths are only read and never written", async () => {
   await readUsage({ provider: "anthropic-subscription", account: "default" }, {
     env: { OMO_LIMITLESS_AUTH_PATH: "/auth-no-write" }, homeDir: "/home", fs,
     fetch: async () => jsonResponse({}, 401),
-    spawnSync: () => ({ status: 1 }),
+    spawn: () => { throw new Error("CodexBar unavailable"); },
     now: () => Date.now() + 800000,
   });
   assert.ok(touched.every(([op]) => op === "read"));

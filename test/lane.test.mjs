@@ -46,6 +46,15 @@ test('resolveLane - ctx.model openai-codex-responses', () => {
   assert.deepStrictEqual(result.accounts, ['default']);
 });
 
+test('resolveLane - flat provider entry without access resolves default account', () => {
+  const result = resolveLane({
+    model: { api: 'claude-sdk-oauth' },
+    branch: [],
+    authJson: { 'anthropic-subscription': { accountId: 'id' } },
+  });
+  assert.deepStrictEqual(result.accounts, ['default']);
+});
+
 test('resolveLane - ctx.model wins over last assistant message', () => {
   const result = resolveLane({
     model: { api: 'claude-sdk-oauth' },
@@ -151,7 +160,7 @@ test('resolveLane - chatgpt with multiple accounts', () => {
   assert.deepStrictEqual(result.accounts, ['personal', 'work']);
 });
 
-test('resolveLane - affinity reorders accounts', () => {
+test('resolveLane preserves auth account order', () => {
   const result = resolveLane({
     model: { api: 'claude-sdk-oauth' },
     branch: [],
@@ -164,28 +173,10 @@ test('resolveLane - affinity reorders accounts', () => {
         ]
       }
     },
-    affinity: { order: ['bob', 'alice', 'charlie'] }
+    affinity: undefined
   });
   assert.strictEqual(result.provider, 'anthropic-subscription');
-  assert.deepStrictEqual(result.accounts, ['bob', 'alice', 'charlie']);
-});
-
-test('resolveLane - affinity never adds accounts', () => {
-  const result = resolveLane({
-    model: { api: 'claude-sdk-oauth' },
-    branch: [],
-    authJson: {
-      'anthropic-subscription': {
-        accounts: [
-          { name: 'alice', access: 'token1' },
-          { name: 'bob', access: 'token2' }
-        ]
-      }
-    },
-    affinity: { order: ['nonexistent', 'bob', 'alice'] }
-  });
-  assert.strictEqual(result.provider, 'anthropic-subscription');
-  assert.deepStrictEqual(result.accounts, ['bob', 'alice']);
+  assert.deepStrictEqual(result.accounts, ['alice', 'bob', 'charlie']);
 });
 
 test('readAuthJson - valid auth.json', () => {
@@ -197,7 +188,6 @@ test('readAuthJson - valid auth.json', () => {
   };
 
   const result = readAuthJson({
-    env: () => undefined,
     homeDir: '/home/user',
     fs: {
       readFileSync: () => JSON.stringify(authJson)
@@ -209,7 +199,6 @@ test('readAuthJson - valid auth.json', () => {
 
 test('readAuthJson - missing file returns null', () => {
   const result = readAuthJson({
-    env: () => undefined,
     homeDir: '/home/user',
     fs: {
       readFileSync: () => {
@@ -223,7 +212,6 @@ test('readAuthJson - missing file returns null', () => {
 
 test('readAuthJson - malformed JSON returns null', () => {
   const result = readAuthJson({
-    env: () => undefined,
     homeDir: '/home/user',
     fs: {
       readFileSync: () => '{invalid json}'
@@ -231,23 +219,6 @@ test('readAuthJson - malformed JSON returns null', () => {
   });
 
   assert.strictEqual(result, null);
-});
-
-test('readAuthJson - OMO_LIMITLESS_AUTH_PATH env override', () => {
-  const authJson = { test: 'data' };
-
-  const result = readAuthJson({
-    env: (name) => name === 'OMO_LIMITLESS_AUTH_PATH' ? '/custom/path/auth.json' : undefined,
-    homeDir: '/home/user',
-    fs: {
-      readFileSync: (path) => {
-        assert.strictEqual(path, '/custom/path/auth.json');
-        return JSON.stringify(authJson);
-      }
-    }
-  });
-
-  assert.deepStrictEqual(result, authJson);
 });
 
 test('readAuthJson - env as object', () => {
@@ -272,7 +243,6 @@ test('readAuthJson - default path construction', () => {
   let capturedPath = null;
 
   const result = readAuthJson({
-    env: () => undefined,
     homeDir: '/home/user',
     fs: {
       readFileSync: (path) => {
@@ -291,7 +261,6 @@ test('readAuthJson - default path construction', () => {
 
 test('readAuthJson - never throws', () => {
   const result = readAuthJson({
-    env: () => undefined,
     homeDir: '/home/user',
     fs: {
       readFileSync: () => {
@@ -346,7 +315,6 @@ test('resolveLane - finds last assistant message in a long branch', () => {
 
 test('readAuthJson - corrupted but valid JSON structure', () => {
   const result = readAuthJson({
-    env: () => undefined,
     homeDir: '/home/user',
     fs: {
       readFileSync: () => 'null'

@@ -1,10 +1,12 @@
 // Fake usage snapshots are keyed by provider, e.g.
 // {"anthropic-subscription":{"five_hour":{"utilization":95,"resetAt":1234567890000},"seven_day":{"utilization":10,"resetAt":1234567890000},"overageEnabled":false},"chatgpt-subscription":{...}}.
-import { spawnSync as defaultSpawnSync } from "node:child_process";
-import { readFile, mkdir, writeFile, rename } from "node:fs/promises";
+import { execFileSync as defaultExecFileSync, spawn as defaultSpawn } from "node:child_process";
 import { createHash } from "node:crypto";
+import { existsSync } from "node:fs";
+import { mkdir, readFile, rename, writeFile } from "node:fs/promises";
 import { homedir } from "node:os";
-import { join } from "node:path";
+import { delimiter, join } from "node:path";
+import { accountEntry, epochMs } from "./state.mjs";
 
 const AUTH_URL = {
   "anthropic-subscription": "https://api.anthropic.com/api/oauth/usage",
@@ -17,26 +19,9 @@ function parsedJson(text) {
   try { return JSON.parse(text); } catch { return null; }
 }
 
-function accountEntry(auth, provider, account) {
-  const providerAuth = auth?.[provider];
-  if (Array.isArray(providerAuth?.accounts)) {
-    return providerAuth.accounts.find((entry) => entry?.name === account) ?? null;
-  }
-  return account === "default" ? providerAuth ?? null : null;
-}
-
 function safeIdentity(auth, provider, account) {
   const entry = accountEntry(auth, provider, account);
   return entry?.uuid || entry?.accountUuid || entry?.account_uuid || entry?.email || null;
-}
-
-export function listAccounts(authJson, provider) {
-  const entry = typeof authJson === "string" ? parsedJson(authJson) : authJson;
-  const providerAuth = entry?.[provider];
-  if (Array.isArray(providerAuth?.accounts)) {
-    return providerAuth.accounts.flatMap((account) => typeof account?.name === "string" ? [account.name] : []);
-  }
-  return providerAuth ? ["default"] : [];
 }
 
 function snapshot(provider, account, windows, overageEnabled, source, error) {
@@ -52,8 +37,7 @@ function snapshot(provider, account, windows, overageEnabled, source, error) {
 
 function numericWindow(kind, utilization, resetAt) {
   const value = Number(utilization);
-  let reset = typeof resetAt === "number" ? resetAt : Date.parse(resetAt);
-  if (typeof resetAt === "number" && resetAt > 0 && resetAt < 1e12) reset *= 1000;
+  const reset = epochMs(resetAt);
   if (typeof utilization !== "number" || !Number.isFinite(value) || value < 0 || value > 100 || !Number.isFinite(reset)) return null;
   return { kind, utilization: value, resetAt: reset };
 }
@@ -164,7 +148,7 @@ async function knownIdentity({ deps, fs, fetchFn, provider, account, token }) {
   const persisted = await readJson(fs, identityPath(deps, account));
   if (typeof persisted?.uuid === "string" && persisted.uuid) return persisted.uuid;
   // Profile identity is captured only after a successful usage request.
-  const profile = await timedRequest(fetchFn, "https://api.anthropic.com/api/oauth/profile", token, provider, account, deps);
+  const profile = await timedRequest(fetchFn, "https://api.anthropic.com/api/oauth/profile", token, provider, undefined, deps);
   if (profile.status !== 200) return null;
   const uuid = profile.body?.account?.uuid || profile.body?.account_uuid || profile.body?.uuid;
   if (typeof uuid !== "string" || !uuid) return null;
@@ -188,18 +172,76 @@ async function claudeCodeFallback({ deps, fs, fetchFn, provider, account, identi
 }
 
 function codexbarFallback(deps, provider, account) {
-  const cli = deps.spawnSync || defaultSpawnSync;
-  try {
-    const result = cli("codexbar-cli", ["usage", "-p", provider === "anthropic-subscription" ? "claude" : "codex", "--json"], {
-      encoding: "utf8", timeout: 10000, windowsHide: true,
-    });
-    if (result.error || result.status !== 0) return null;
-    const body = parsedJson(result.stdout);
-    if (!body) return null;
-    return mapUsage(provider, account, body, "codexbar")
-      || mapUsage(provider, account, body.usage, "codexbar")
-      || mapUsage(provider, account, body.providers?.[provider === "anthropic-subscription" ? "claude" : "codex"], "codexbar");
-  } catch { return null; }
+  const cli = deps.spawn || defaultSpawn;
+  const commands = (deps.platform || process.platform) === "win32"
+    ? ["codexbar-cli", "codexbar-cli.cmd", "codexbar-cli.exe"]
+    : ["codexbar-cli"];
+  const providerName = provider === "anthropic-subscription" ? "claude" : "codex";
+  const args = ["usage", "-p", providerName, "--json"];
+  return new Promise((resolve) => {
+    let index = 0;
+    const run = () => {
+      if (index >= commands.length) return resolve(null);
+      const command = commands[index++];
+      const windowsShim = (deps.platform || process.platform) === "win32" && /\.cmd$|\.bat$/i.test(command);
+      let shimPath = command;
+      if (windowsShim) {
+        try {
+          const env = deps.env || process.env;
+          shimPath = deps.resolveCommand?.(command) || (env.PATH || env.Path || env.path)?.split(delimiter)
+            .map((dir) => join(dir, command)).find(existsSync);
+          if (!shimPath) throw new Error("CodexBar shim not found");
+        } catch {
+          return run();
+        }
+      }
+      const executable = windowsShim ? (deps.env || process.env).ComSpec || "cmd.exe" : command;
+      const spawnArgs = windowsShim
+        ? ["/d", "/s", "/c", `""${shimPath}" ${args.join(" ")}"`]
+        : args;
+      let child;
+      try {
+        child = cli(executable, spawnArgs, { windowsHide: true, ...(windowsShim ? { windowsVerbatimArguments: true } : {}), stdio: ["ignore", "pipe", "ignore"] });
+      } catch {
+        return run();
+      }
+      let stdout = "";
+      let settled = false;
+      const finish = (value) => {
+        if (settled) return;
+        settled = true;
+        (deps.clearTimeout || clearTimeout)(timer);
+        resolve(value);
+      };
+      const timer = (deps.setTimeout || setTimeout)(() => {
+        if (child.pid && (deps.platform || process.platform) === "win32") {
+          try { (deps.execFileSync || defaultExecFileSync)("taskkill", ["/pid", String(child.pid), "/T", "/F"], { windowsHide: true }); }
+          catch { child.kill(); }
+        } else child.kill();
+        finish(null);
+      }, 10000);
+      child.stdout?.setEncoding?.("utf8");
+      child.stdout?.on("data", (chunk) => { stdout += chunk; });
+      child.once("error", (error) => {
+        if (error?.code === "ENOENT" && index < commands.length) {
+          settled = true;
+          (deps.clearTimeout || clearTimeout)(timer);
+          run();
+        }
+        else finish(null);
+      });
+      child.once("close", (code) => {
+        if (code !== 0) return finish(null);
+        const body = parsedJson(stdout);
+        finish(body && (
+          mapUsage(provider, account, body, "codexbar")
+          || mapUsage(provider, account, body.usage, "codexbar")
+          || mapUsage(provider, account, body.providers?.[provider === "anthropic-subscription" ? "claude" : "codex"], "codexbar")
+        ));
+      });
+    };
+    run();
+  });
 }
 
 async function readUsageImpl({ provider, account }, deps = {}) {
@@ -250,7 +292,7 @@ async function readUsageImpl({ provider, account }, deps = {}) {
           || (await readJson(deps.fs || { readFile }, identityPath(deps, account)))?.uuid;
         const claudeFallback = await claudeCodeFallback({ deps, fs, fetchFn, provider, account, identity, accountId });
         value = claudeFallback?.usage || null;
-        if (!value) value = codexbarFallback(deps, provider, account);
+        if (!value) value = await codexbarFallback(deps, provider, account);
         error = error || "all usage sources failed";
       }
       if (!value) value = none(error || "invalid usage response");

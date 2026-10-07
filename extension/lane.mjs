@@ -8,12 +8,11 @@ import { join } from 'node:path';
  * @param {Object} opts.model - ctx.model or undefined (has provider, api fields)
  * @param {Array} opts.branch - Session branch entries (array of messages)
  * @param {Object} opts.authJson - Parsed auth.json or null
- * @param {Object} opts.affinity - Optional affinity info for account ordering
  * @returns {{provider: string, accounts: string[]}}
  *   provider: "anthropic-subscription", "chatgpt-subscription", "other", or "unknown"
  *   accounts: list of account names
  */
-export function resolveLane({ model, branch, authJson, affinity }) {
+export function resolveLane({ model, branch, authJson }) {
   // Step 1: Determine provider and api from model or last assistant message
   let provider = 'unknown';
   let api = null;
@@ -43,15 +42,9 @@ export function resolveLane({ model, branch, authJson, affinity }) {
   // Step 2: Resolve accounts based on provider
   const accounts = resolveAccounts(provider, authJson);
 
-  // Step 3: Reorder accounts using affinity (if provided and accounts exist)
-  let orderedAccounts = accounts;
-  if (affinity && accounts.length > 0) {
-    orderedAccounts = orderByAffinity(accounts, affinity);
-  }
-
   return {
     provider,
-    accounts: orderedAccounts
+    accounts
   };
 }
 
@@ -85,56 +78,20 @@ function resolveAccounts(provider, authJson) {
   if (!providerKey) return [];
 
   const providerEntry = authJson[providerKey];
-  if (!providerEntry) return [];
-
-  // If accounts[] exists, extract names
-  if (providerEntry.accounts && Array.isArray(providerEntry.accounts)) {
-    const names = providerEntry.accounts
+  if (Array.isArray(providerEntry?.accounts)) {
+    return providerEntry.accounts
       .filter(acc => acc && typeof acc === 'object' && acc.name)
       .map(acc => acc.name);
-    return names.length > 0 ? names : [];
   }
 
-  // Else if flat entry exists (check for access token), return ["default"]
-  if (providerEntry.access) {
-    return ['default'];
-  }
-
-  return [];
-}
-
-/**
- * Reorder accounts using affinity (HRW or similar).
- * Never adds accounts, only reorders existing ones.
- */
-function orderByAffinity(accounts, affinity) {
-  if (!affinity || accounts.length === 0) return accounts;
-
-  // If affinity provides an order, use it
-  if (affinity.order && Array.isArray(affinity.order)) {
-    const ordered = [];
-    for (const name of affinity.order) {
-      if (accounts.includes(name)) {
-        ordered.push(name);
-      }
-    }
-    // Add any remaining accounts not in affinity.order
-    for (const name of accounts) {
-      if (!ordered.includes(name)) {
-        ordered.push(name);
-      }
-    }
-    return ordered;
-  }
-
-  return accounts;
+  return providerEntry ? ['default'] : [];
 }
 
 /**
  * Read and parse auth.json.
  * 
  * @param {Object} opts
- * @param {Object} opts.env - Environment accessor function (name: string) -> string | undefined
+ * @param {Object} opts.env - Environment variables
  * @param {string} opts.homeDir - User home directory path
  * @param {Object} opts.fs - File system object (readFileSync, statSync, etc.)
  * @returns {Object|null} Parsed auth.json or null (never throws)
@@ -143,10 +100,7 @@ export function readAuthJson({ env, homeDir, fs }) {
   try {
     // Determine path: OMO_LIMITLESS_AUTH_PATH or <homeDir>/.omo/agent/auth.json
     let authPath;
-    if (env && typeof env === 'function') {
-      const envPath = env('OMO_LIMITLESS_AUTH_PATH');
-      authPath = envPath || join(homeDir, '.omo', 'agent', 'auth.json');
-    } else if (typeof env === 'object' && env !== null) {
+    if (typeof env === 'object' && env !== null) {
       // env is an object (for testing)
       const envPath = env['OMO_LIMITLESS_AUTH_PATH'];
       authPath = envPath || join(homeDir, '.omo', 'agent', 'auth.json');
