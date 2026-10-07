@@ -332,6 +332,31 @@ test("policy.mjs table tests", async (t) => {
 });
 
 test("adversarial inputs", async (t) => {
+  await t.test("multi-account unknown reset does not disable known-window warm checks", () => {
+    const result = decide({
+      snapshots: [
+        {
+          provider: "anthropic-subscription",
+          account: "unknown",
+          windows: [{ kind: "five_hour", utilization: 95, resetAt: null }],
+          overageEnabled: false,
+          source: "endpoint"
+        },
+        {
+          provider: "anthropic-subscription",
+          account: "known",
+          windows: [{ kind: "five_hour", utilization: 95, resetAt: now + 3600000 }],
+          overageEnabled: false,
+          source: "endpoint"
+        }
+      ],
+      config: defaultConfig,
+      now
+    });
+    assert.equal(result.state, "park-wait");
+    assert.equal(result.warm.on, true);
+  });
+
   // NaN utilization
   await t.test("NaN utilization -> ok", () => {
     const result = decide({
@@ -396,6 +421,100 @@ test("adversarial inputs", async (t) => {
     });
     assert.equal(result.state, "park-exit");
   });
+
+  await t.test("over window without resetAt -> park-wait and recheck", () => {
+    const result = decide({
+      snapshots: [{
+        provider: "anthropic-subscription",
+        account: "default",
+        windows: [{ kind: "five_hour", utilization: 90 }],
+        overageEnabled: false,
+        source: "endpoint"
+      }],
+      config: defaultConfig,
+      now
+    });
+    assert.deepEqual(result, {
+      state: "park-wait",
+      resetAt: null,
+      warm: { on: false },
+      reason: "over threshold; reset unknown"
+    });
+  });
+
+  await t.test("unknown reset with another valid over window -> use valid reset", () => {
+    const resetAt = now + 7200000;
+    const result = decide({
+      snapshots: [{
+        provider: "anthropic-subscription",
+        account: "default",
+        windows: [
+          { kind: "five_hour", utilization: 91 },
+          { kind: "seven_day", utilization: 96, resetAt }
+        ],
+        overageEnabled: false,
+        source: "endpoint"
+      }],
+      config: defaultConfig,
+      now
+    });
+    assert.equal(result.state, "park-wait");
+    assert.equal(result.resetAt, resetAt);
+    assert.equal(result.window, "seven_day");
+  });
+
+  await t.test("under window without resetAt -> ok", () => {
+    const result = decide({
+      snapshots: [{
+        provider: "anthropic-subscription",
+        account: "default",
+        windows: [{ kind: "five_hour", utilization: 50 }],
+        overageEnabled: false,
+        source: "endpoint"
+      }],
+      config: defaultConfig,
+      now
+    });
+    assert.equal(result.state, "ok");
+  });
+});
+
+test("seeded fuzz snapshots never throw", () => {
+  for (const seed of [4242, 7, 99]) {
+    let state = seed >>> 0;
+    const random = () => {
+      state = (Math.imul(state, 1664525) + 1013904223) >>> 0;
+      return state / 0x100000000;
+    };
+    const pick = values => values[Math.floor(random() * values.length)];
+
+    for (let sample = 0; sample < 5000; sample++) {
+      const accountCount = 1 + Math.floor(random() * 3);
+      const snapshots = Array.from({ length: accountCount }, (_, accountIndex) => ({
+        provider: "anthropic-subscription",
+        account: `account-${accountIndex}`,
+        windows: Array.from({ length: 1 + Math.floor(random() * 2) }, () => {
+          const window = {
+            kind: pick(["five_hour", "seven_day"]),
+            utilization: pick([random() * 120, NaN, null, undefined, "95"]),
+            resetAt: pick([null, undefined, NaN, now - 1, now, now + 3600000, "soon", "123", random() * 1000000])
+          };
+          if (random() < 0.15) delete window.resetAt;
+          return window;
+        }),
+        overageEnabled: random() < 0.5,
+        source: "endpoint"
+      }));
+      const config = {
+        ...defaultConfig,
+        warm: {
+          ...defaultConfig.warm,
+          "anthropic-subscription": { ...defaultConfig.warm["anthropic-subscription"], on: random() < 0.5 }
+        }
+      };
+      assert.doesNotThrow(() => decide({ snapshots, config, now }));
+    }
+  }
 });
 
 test("edge cases", async (t) => {

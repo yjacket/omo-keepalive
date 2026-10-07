@@ -43,8 +43,21 @@ export function decide({ snapshots, config, now }) {
     });
 
     if (overWindows.length > 0) {
-      // Store binding window: the one with latest resetAt
-      const binding = overWindows.reduce((latest, w) =>
+      // Missing or invalid reset times cannot be waited on safely.
+      const validOverWindows = overWindows.filter(w =>
+        Number.isFinite(w.resetAt)
+      );
+      if (validOverWindows.length === 0) {
+        accountBindings[account] = {
+          window: null,
+          overageEnabled: snapshot.overageEnabled,
+          allWindows: snapshot.windows
+        };
+        continue;
+      }
+
+      // Store binding window: the one with latest valid resetAt
+      const binding = validOverWindows.reduce((latest, w) =>
         w.resetAt > latest.resetAt ? w : latest
       );
       
@@ -67,10 +80,25 @@ export function decide({ snapshots, config, now }) {
 
   const accounts = Object.keys(accountBindings);
 
+  // With no known reset, park-wait without a deadline so the caller re-checks.
+  if (accounts.every(acc => accountBindings[acc].window === null)) {
+    return {
+      state: "park-wait",
+      resetAt: null,
+      warm: { on: false },
+      reason: "over threshold; reset unknown"
+    };
+  }
+
+  // An account with unknown reset blocks waiting, but another known reset
+  // provides a safe re-check point.
   // Provider resetAt = EARLIEST of binding resetAt times
   // (first account to free determines when the park lifts)
-  const providerResetAt = Math.min(...accounts.map(acc => accountBindings[acc].window.resetAt));
-  const bindingWindow = Object.values(accountBindings).find(b => b.window.resetAt === providerResetAt).window;
+  const knownBindings = accounts
+    .map(acc => accountBindings[acc])
+    .filter(binding => binding.window !== null);
+  const providerResetAt = Math.min(...knownBindings.map(binding => binding.window.resetAt));
+  const bindingWindow = knownBindings.find(b => b.window.resetAt === providerResetAt).window;
 
   // Determine park-wait vs park-exit based on waitLimitMs
   const waitLimitMs = config.waitLimitMs[provider];
@@ -86,8 +114,7 @@ export function decide({ snapshots, config, now }) {
   
   if (warmOn) {
     // Check all accounts for no-warm conditions
-    for (const acc of accounts) {
-      const binding = accountBindings[acc];
+    for (const binding of knownBindings) {
       
       // 99% or higher means no warm
       if (binding.window.utilization >= 99) {
