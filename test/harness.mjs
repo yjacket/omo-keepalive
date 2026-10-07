@@ -112,8 +112,21 @@ export function createHarness({
     hasUI: true,
     isChild,
   };
-  const fire = async (eventName, payload = {}) =>
-    Promise.all((handlers.get(eventName) ?? []).map((handler) => handler(payload, ctx)));
+  // Mirrors senpi's extension runner (dist/core/extensions/runner.js): handlers of one event run strictly one
+  // after another in registration order, each awaited before the next (dispatchEmit :1306-1314,
+  // emitMessageEnd :1386-1390, emitBeforeAgentStart :1704-1728, emitBoundary :1159-1168), over a snapshot of
+  // the list (snapshotEventHandlers). tool_call stops at the first {block:true} result (emitToolCall :1489-1506).
+  // Deliberate difference: a throwing handler rejects here so a test fails loudly; senpi routes it to emitError
+  // (:1322-1331) for every event except tool_call, which rethrows (:1509-1513).
+  const fire = async (eventName, payload = {}) => {
+    const results = [];
+    for (const handler of [...(handlers.get(eventName) ?? [])]) {
+      const result = await handler(payload, ctx);
+      results.push(result);
+      if (eventName === "tool_call" && result?.block) break;
+    }
+    return results;
+  };
   const harness = {
     pi, ctx, handlers, commands, statusLines, notifications, sentMessages, sentUserMessages,
     shutdownCalls, eventsEmitted, clock, tmpHome, goalStore, queuedTurns,

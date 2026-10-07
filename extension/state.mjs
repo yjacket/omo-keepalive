@@ -74,3 +74,16 @@ export function readSharedSnapshot({ homeDir, provider, account, fs = nodeFs }) 
 export function writeSharedSnapshot({ homeDir, snapshot, observedAt, fs = nodeFs }) {
   return writeJsonAtomic(snapshotPath(homeDir, snapshot.provider, snapshot.account), { v: 1, observedAt, snapshot }, fs);
 }
+
+// Epoch seconds (< 1e12) or ms, or a date string -> ms; null when unparseable.
+export function epochMs(value) {
+  const ms = typeof value === "number" ? (value < 1e12 ? value * 1000 : value) : Date.parse(value);
+  return Number.isFinite(ms) ? ms : null;
+}
+
+// auth.json entry for provider/account: accounts[] by name, or the flat provider entry for "default".
+export function accountEntry(auth, provider, account) {
+  const source = auth?.[provider];
+  if (Array.isArray(source?.accounts)) return source.accounts.find((entry) => entry?.name === account) ?? null;
+  return account === "default" ? source ?? null : null;
+}
