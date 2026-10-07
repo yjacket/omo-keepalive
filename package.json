@@ -1,0 +1,7 @@
+{
+  "name": "omo-limitless",
+  "type": "module",
+  "scripts": {
+    "test": "node --test"
+  }
+}
