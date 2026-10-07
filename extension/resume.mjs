@@ -34,10 +34,11 @@ export function install(core) {
     core.timers.set(timer, Math.max(core.config.pollMinIntervalMs ?? 0, RECHECK_MIN_MS), onReset);
   };
 
-  const onReset = async () => {
+  const onReset = async (_ctx, stale) => {
     recheck = false;
     if (!core.isParked() || core.state.parkState !== "park-wait") return;
     await core.resetDue();
+    if (stale?.()) return; // session reset mid-poll: the next session arms its own timer
     schedule();
   };
 

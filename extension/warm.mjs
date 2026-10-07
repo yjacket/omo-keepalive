@@ -93,16 +93,20 @@ export function install(core) {
   };
   const active = () => core.enabled() && core.canWarm() && !core.isLatecomer() && !warmFailed;
 
-  async function warmOnce(ctx) {
+  async function warmOnce(ctx, stale) {
     // IS-1: a session limitless is not gating (no goal paused by limitless) is never warmed.
     const owned = core.ownedGoalId();
     const goal = owned ? await core.readGoal(ctx) : null;
-    if (!owned || goal?.id !== owned || goal.status !== "paused" || !active() || ctx?.isIdle?.() !== true) {
+    if (stale?.()) return false; // the session was reset while reading: nothing of this callback may land
+    // Not idle, or senpi has queued messages (types.d.ts ExtensionContext.hasPendingMessages): skip this warm turn.
+    if (!owned || goal?.id !== owned || goal.status !== "paused" || !active() || ctx?.isIdle?.() !== true
+      || ctx?.hasPendingMessages?.() === true) {
       schedule(true);
-      return;
+      return false;
     }
     warmQueued = true;
     core.pi.sendMessage({ customType: "limitless-warm", content: WARM_TEXT, display: false }, { triggerTurn: true });
+    return true;
   }
 
   function schedule(fromNow = false) {
@@ -120,9 +124,10 @@ export function install(core) {
       stop("invalid warm interval");
       return;
     }
-    core.timers.set(WARM_TIMER, interval, async (ctx) => {
-      await warmOnce(ctx);
-      schedule(true);
+    core.timers.set(WARM_TIMER, interval, async (ctx, stale) => {
+      const sent = await warmOnce(ctx, stale);
+      if (stale?.()) return;
+      if (sent) schedule(true); // the skip paths already rescheduled
     });
   }
 
@@ -192,7 +197,7 @@ export function install(core) {
     if (!resolve || !core.lastCtx?.model) return false;
     try {
       const lifetime = resolve(core.lastCtx.model);
-      return lifetime?.kind === "ttl" && lifetime.ttlSeconds === 1800;
+      return lifetime?.kind === "ttl" && lifetime.ttlSeconds === (Number(core.state.warm?.requireTtlSeconds) || 1800);
     } catch { return false; }
   }
   core.onBoundary(async () => {

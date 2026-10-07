@@ -74,12 +74,13 @@ export function install(core) {
   const scheduleCheck = () => {
     const elapsed = now() - startedAt;
     if (elapsed >= MAX_MS) return release("reactive-check-cap", true);
-    core.timers.set("reactive-check", Math.min(CHECK_MS, MAX_MS - elapsed), async () => {
+    core.timers.set("reactive-check", Math.min(CHECK_MS, MAX_MS - elapsed), async (_ctx, stale) => {
       if (!active) return;
       if (now() - startedAt >= MAX_MS) return release("reactive-check-cap", true);
       try {
         const snapshots = [];
         for (const name of accounts) snapshots.push(await core.readUsage(provider, name));
+        if (stale?.()) return;
         if (snapshots.length === 0 || snapshots.some((s) => !s || s.source === "none")) {
           return release("reactive-usage-unavailable");
         }

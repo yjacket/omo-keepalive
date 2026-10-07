@@ -79,9 +79,12 @@
 //                                            clears every timer and its own per-session state. After a shutdown
 //                                            core.sessionId is null (nothing persists until the next session loads).
 // core.onBoundary(fn(ctx, kind))             after the core's own work at kind "session_start"|"turn_end"|"agent_settled"
-// core.timers.set(name, ms, fn(ctx)) / clear(name) / has(name)
+// core.timers.set(name, ms, fn(ctx, stale)) / clear(name) / has(name)
 //                                            one timer per name on the injected clock (deps.setTimeout); every
-//                                            tick runs the control hook first, errors land in state.lastError
+//                                            tick runs the control hook first, errors land in state.lastError.
+//                                            stale() turns true once the session was reset (core.sessionEpoch moved)
+//                                            after the callback started: a callback that awaits must check it and
+//                                            drop its effects instead of acting on the next session's state.
 // core.markExtensionTurn(kind)               mark the current agent run (call from before_agent_start): every
 //                                            tool_call in it is blocked; cleared at the next before_agent_start /
 //                                            agent_end. core.blockAllToolsInTurn() -> boolean, core.turn -> {kind}
@@ -107,6 +110,14 @@ export const STATUS_KEY = "limitless";
 export const SPAWN_TOOLS = new Set(["task", "task_create"]);
 export const NOTICE_WIDGET_KEY = "limitless-notice";
 export const GOAL_CONTINUATION_PREFIX = "Continue working toward the active thread goal.";
+// senpi dist/core/messages.js GOAL_CONTINUATION_MESSAGE_TYPE: the custom message the goal extension queues for a
+// continuation (goal/lifecycle-helpers.js queueHiddenGoalPrompt: sendMessage {triggerTurn, deliverAs:"followUp"}).
+export const GOAL_CONTINUATION_TYPE = "goal-continuation";
+// senpi goal/todo-owed-backstop.js:13 TODO_OWED_CUSTOM_TYPE, queued at :137 (sendMessage {triggerTurn, deliverAs:"followUp"}):
+// the reminder run it starts is autonomous goal-adjacent work, so while limitless holds the goal paused it is treated
+// exactly like a goal continuation.
+export const TODO_OWED_TYPE = "senpi.todo-owed";
+const AUTO_RUN_TYPES = new Set([GOAL_CONTINUATION_TYPE, TODO_OWED_TYPE]);
 const SUBSCRIPTION = new Set(["anthropic-subscription", "chatgpt-subscription"]);
 const PARKED = new Set(["park-wait", "park-exit"]);
 const MAX_TIMER_MS = 2147483647;
@@ -237,6 +248,7 @@ export function createCore(pi, { config, deps = {} } = {}) {
   // releaseOwnedGoal un-paused the goal while a run was active: emit goal_store_changed at agent_settled unless a run
   // starts first (then the goal extension's own agent_end continuation owns the restart).
   let pendingKick = false;
+  let goalRun = false; // the current agent run is the goal's own (goal-continuation message); user runs are never blocked (IS-6)
 
   const core = {
     pi, deps, config, env, homeDir,
@@ -246,6 +258,7 @@ export function createCore(pi, { config, deps = {} } = {}) {
     state: freshState(),
     startState: null,
     turn: null,
+    sessionEpoch: 0, // bumped by every session reset (shutdown, /new, /resume)
     texts: TEXTS,
     now: () => now(),
     hhmm: (ms) => hhmm(ms, now()),
@@ -317,10 +330,13 @@ export function createCore(pi, { config, deps = {} } = {}) {
         if (vetoed) return;
         const handle = setT(() => {
           timerHandles.delete(name);
+          const epoch = core.sessionEpoch;
+          const stale = () => epoch !== core.sessionEpoch;
           return (async () => {
             try {
               await runControl(core.lastCtx, `timer:${name}`);
-              await fn(core.lastCtx);
+              if (stale()) return;
+              await fn(core.lastCtx, stale);
             } catch (error) {
               core.recordError(`timer:${name}`, error);
             }
@@ -477,7 +493,9 @@ export function createCore(pi, { config, deps = {} } = {}) {
 
     async resetDue() {
       if (vetoed || !core.isParked()) return core.state.decision;
-      const decision = await core.poll({ force: true, anySource: true });
+      const epoch = core.sessionEpoch;
+      const decision = await core.poll({ force: true, anySource: true, releaseReason: "reset" });
+      if (epoch !== core.sessionEpoch) return core.state.decision;
       if (decision?.state !== "park-wait" && decision?.state !== "park-exit" && core.isParked()) {
         await core.release({ reason: "reset" });
         await core.releaseOwnedGoal({ reason: "reset" });
@@ -485,11 +503,15 @@ export function createCore(pi, { config, deps = {} } = {}) {
       return decision;
     },
 
-    async poll({ force = false, anySource = false } = {}) {
+    async poll({ force = false, anySource = false, releaseReason = "usage-ok" } = {}) {
       const t = now();
       if (!force && lastPollAt !== null && t >= lastPollAt && t - lastPollAt < config.pollMinIntervalMs) return core.state.decision;
       lastPollAt = t;
+      const epoch = core.sessionEpoch;
       const decision = await measure(t);
+      // The session was reset while the usage read was in flight: that reading belongs to the old session and
+      // must not park, release, arm a timer or touch the state of the next one (or of none).
+      if (epoch !== core.sessionEpoch) return core.state.decision;
       core.state.decision = decision;
       core.state.lastPollAt = t;
       expireResumeHold();
@@ -501,9 +523,9 @@ export function createCore(pi, { config, deps = {} } = {}) {
       if (!held && (decision.state === "park-wait" || decision.state === "park-exit")) {
         await core.park(decision, { source: "poll" });
       } else if (decision.state === "ok" && (core.isParked() ? (anySource || core.state.source === "poll") : staleOwnedGoal)) {
-        if (core.isParked()) await core.release({ reason: "usage-ok" });
+        if (core.isParked()) await core.release({ reason: releaseReason });
         staleOwnedGoal = false;
-        await core.releaseOwnedGoal({ reason: "usage-ok" });
+        await core.releaseOwnedGoal({ reason: releaseReason });
       }
       return decision;
     },
@@ -540,6 +562,8 @@ export function createCore(pi, { config, deps = {} } = {}) {
     async handleAgentSettled(event, ctx) {
       if (vetoed) return;
       core.lastCtx = ctx;
+      core.turn = null;
+      goalRun = false;
       startSession(ctx);
       await boundary(ctx, "agent_settled");
       if (pendingKick) {
@@ -552,10 +576,15 @@ export function createCore(pi, { config, deps = {} } = {}) {
       if (vetoed) return;
       pendingKick = false;
     },
+    // agent_end.willRetry (senpi agent-abort-provenance.js:50-54, set at agent-session.js:2054/2068): the run is retried
+    // through agent.continue() after a provider error, with no new message_start / before_agent_start, so the mark
+    // must survive until the final agent_end (or agent_settled / the next before_agent_start / a session reset).
     async handleAgentEnd(event, ctx) {
       if (vetoed) return;
       core.lastCtx = ctx;
+      if (event?.willRetry === true) return;
       core.turn = null;
+      goalRun = false;
     },
     async handleBeforeAgentStart(event, ctx) {
       if (event?.preview === true || vetoed) return undefined;
@@ -563,20 +592,39 @@ export function createCore(pi, { config, deps = {} } = {}) {
       pendingKick = false;
       core.lastCtx = ctx;
       startSession(ctx);
-      if (!core.enabled() || !core.isParked()) return undefined;
-      const goal = await core.readGoal(ctx);
       const continuation = event?.trigger === "extension" && typeof event.prompt === "string"
         && event.prompt.startsWith(GOAL_CONTINUATION_PREFIX);
-      if (goal?.status === "active") await core.pauseActiveGoal({ notice: true });
-      else if (continuation && !(goal?.status === "paused" && goal.id === core.state.pausedByLimitless)) return undefined;
-      if (!continuation) return undefined;
-      core.markExtensionTurn("goal-race");
+      goalRun = continuation;
+      if (!core.enabled() || !core.isParked()) return undefined;
+      if (!(await raceBlock(ctx, continuation))) return undefined;
       return { message: { customType: "limitless-park-note", content: TEXTS.raceNote, display: false } };
+    },
+    // senpi emits no before_agent_start for an automatic goal continuation (it runs from the followUp queue:
+    // agent-session.js _scheduleContinuationAfterCurrentEvent :6733; before_agent_start only at :3790 for a prompt and
+    // :4293 for an idle sendMessage), and agent_start carries no payload. The goal's own continuation is a custom
+    // message of type goal-continuation, which senpi announces with message_start before the run's first tool call,
+    // so this is where a goal turn is told apart from a user turn (role "user", never blocked: IS-6).
+    async handleMessageStart(event, ctx) {
+      if (vetoed) return;
+      if (event?.message?.role === "user") {
+        // IS-6: a user message delivered into a running wait turn (steer / followUp into the same run: no
+        // before_agent_start) ends the goal-run and wait-turn treatment; only task/task_create stay blocked for it.
+        goalRun = false;
+        if (core.turn?.kind === "goal-race" || core.turn?.kind === "warm") core.turn = null;
+      }
+      if (event?.message?.role !== "custom" || !AUTO_RUN_TYPES.has(event.message.customType)) return;
+      goalRun = true; // a park landing later in this run blocks its remaining tool calls (handleToolCall)
+      core.lastCtx = ctx;
+      startSession(ctx);
+      if (!core.enabled() || !core.isParked() || core.blockAllToolsInTurn()) return;
+      await raceBlock(ctx, true);
     },
     async handleToolCall(event, ctx) {
       if (vetoed) return undefined;
       core.lastCtx = ctx;
-      if (core.blockAllToolsInTurn()) {
+      // A goal-driven run that is still looping when a park lands stops here: no autonomous goal work after the park,
+      // but only while limitless holds the goal paused (IS-1: a session without such a goal is never gated).
+      if (core.blockAllToolsInTurn() || (goalRun && core.enabled() && core.isParked() && core.ownedGoalId() !== null)) {
         const reason = core.isParked() ? `${core.blockReason()} - tools are disabled in this wait turn` : "limitless: tools are disabled in this wait turn";
         return { block: true, reason };
       }
@@ -591,6 +639,17 @@ export function createCore(pi, { config, deps = {} } = {}) {
       if (core.enabled() && core.isParked()) await core.pauseActiveGoal({ notice: true });
     },
   };
+
+  // Pauses an active goal while parked and, for a goal continuation turn, marks the run so every tool_call is blocked
+  // (until agent_end). Returns true when the run was marked.
+  async function raceBlock(ctx, continuation) {
+    const goal = await core.readGoal(ctx);
+    if (goal?.status === "active") await core.pauseActiveGoal({ notice: true });
+    else if (continuation && !(goal?.status === "paused" && goal.id === core.state.pausedByLimitless)) return false;
+    if (!continuation) return false;
+    core.markExtensionTurn("goal-race");
+    return true;
+  }
 
   function parkView() {
     const { parkState, resetAt, window, source, reason } = core.state;
@@ -671,6 +730,7 @@ export function createCore(pi, { config, deps = {} } = {}) {
   // Tears down everything owned by the current session: feature closures first (core.state is still the
   // old session's, so a feature may persist), then every timer and the core's own per-session state.
   function resetSession() {
+    core.sessionEpoch += 1;
     core.setNotice(undefined);
     for (const fn of resetFns) {
       try { fn(); } catch (error) { core.state.lastError = { at: now(), where: "session-reset", message: errText(error) }; }
@@ -682,6 +742,7 @@ export function createCore(pi, { config, deps = {} } = {}) {
     staleOwnedGoal = false;
     lastPollAt = null;
     core.turn = null;
+    goalRun = false;
   }
 
   function applySession() {
@@ -723,6 +784,7 @@ export function createCore(pi, { config, deps = {} } = {}) {
   }
 
   async function measure(t) {
+    const epoch = core.sessionEpoch;
     const ctx = core.lastCtx;
     let lane;
     try {
@@ -744,10 +806,12 @@ export function createCore(pi, { config, deps = {} } = {}) {
       try {
         snapshots.push(await snapshotFor(lane.provider, account, t));
       } catch (error) {
+        if (epoch !== core.sessionEpoch) return { state: "unknown", reason: "session reset" };
         core.state.lastError = { at: t, where: "usage", message: errText(error) };
         return { state: "unknown", reason: "usage reader failed" };
       }
     }
+    if (epoch !== core.sessionEpoch) return { state: "unknown", reason: "session reset" };
     const fakeReset = Number(env.OMO_LIMITLESS_FAKE_RESET_IN_MS);
     const usable = snapshots.map((s) => env.OMO_LIMITLESS_FAKE_RESET_IN_MS && Number.isFinite(fakeReset)
       ? { ...s, windows: (s?.windows ?? []).map((w) => ({ ...w, resetAt: t + fakeReset })) }

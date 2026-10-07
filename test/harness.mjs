@@ -181,6 +181,30 @@ export function createHarness({
       await fire("agent_settled", { type: "agent_settled" });
       return { before, executed, blocked };
     },
+    // An automatic run in senpi's real order for a queued followUp (agent-session.js _scheduleContinuationAfterCurrentEvent
+    // :6733): agent_start and message_start for the queued message, NO before_agent_start. kind "goal" is the goal
+    // extension's hidden custom message (goal-continuation); kind "user" is queued user text.
+    async runAutoRun({ kind = "goal", tools = [] } = {}) {
+      await fire("agent_start", { type: "agent_start" });
+      const message = kind === "goal"
+        ? { role: "custom", customType: "goal-continuation", content: GOAL_CONTINUATION_TEXT, display: false }
+        : kind === "todo-owed"
+          ? { role: "custom", customType: "senpi.todo-owed", content: "You stopped with open todo tasks.", display: false }
+          : { role: "user", content: [{ type: "text", text: "typed while parked" }] };
+      await fire("message_start", { type: "message_start", message });
+      const executed = [];
+      const blocked = [];
+      for (const toolName of tools) {
+        const results = await fire("tool_call", { type: "tool_call", toolName, toolCallId: `${toolName}-${executed.length + blocked.length}`, input: {} });
+        const block = results.find((result) => result?.block === true);
+        if (block) blocked.push({ toolName, reason: block.reason });
+        else executed.push(toolName);
+      }
+      await fire("turn_end", { type: "turn_end", turnIndex: 0, message: { role: "assistant", content: [] }, toolResults: [] });
+      await fire("agent_end", { type: "agent_end", messages: [] });
+      await fire("agent_settled", { type: "agent_settled" });
+      return { executed, blocked };
+    },
     async runQueuedTurns(tools = []) {
       const results = [];
       while (queuedTurns.length > 0) {

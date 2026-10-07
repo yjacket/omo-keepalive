@@ -88,7 +88,6 @@ export function powershellRunner({ timeoutMs = POWERSHELL_TIMEOUT_MS, env = proc
 
 // Launcher of the running session. {exe, args}: exe is "omo" (PATH lookup) or an absolute existing file without
 // shell metacharacters; args are metacharacter-free strings (the first, when present, an existing absolute file).
-export const FALLBACK_LAUNCHER = Object.freeze({ exe: "omo", args: Object.freeze([]) });
 // eslint-disable-next-line no-control-regex
 const UNSAFE_RE = /["%&|<>^`$!\u0000-\u001f]/;
 const OMO_LAUNCHER_RE = /^omo(\.exe|\.cmd)?$/i;
@@ -233,5 +232,3 @@ export function createSelfLaunch(deps = {}) {
 }
 
 export const selfLaunch = createSelfLaunch();
-export const registerSelfLaunch = (request) => selfLaunch.register(request);
-export const unregisterSelfLaunch = (request) => selfLaunch.unregister(request);

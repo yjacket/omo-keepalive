@@ -21,6 +21,7 @@ Then type `/reload` in a running omo session.
 - While waiting it sends warm turns so the prompt cache stays alive.
 - After the reset time (plus `resumeGraceMs`) it resumes the goal.
 - If the provider returns a limit error before a poll catches it, it parks reactively. When that error carries no reset time, the status line shows `⏸ 한도 대기 · 재개 시각 미정` ("resume time unknown") and limitless checks usage 30 minutes later. If the limit has cleared, or usage can't be read, it releases the park. If usage still shows the limit, the park becomes a normal usage park, which resumes at the reset time or, when the reset is still unknown, re-checks every `pollMinIntervalMs` (at least 60 s). A failed check retries every 30 minutes, and after 6 hours without a successful check limitless releases the park.
+- While limitless holds your goal paused, automatic follow-up runs (a goal continuation, a todo reminder) run no tools; a message you type still gets every tool except `task`.
 
 ## Config
 
@@ -75,7 +76,7 @@ Get-ScheduledTask -TaskPath \omo-limitless\ | Unregister-ScheduledTask -Confirm:
 |---|---|
 | `/limitless status` | Print six lines in Korean: the status line (`⏸ 한도 대기 없음` when not parked), `상태:` park state, `사용량:` usage per window, `리셋:` reset time (HH:MM, M/D HH:MM on another day, or `unknown`), `출처:` usage source, `스위치:` 켜짐/꺼짐 |
 | `/limitless resume` | Lift the park and resume now. While still over threshold it does not re-park until the windows that were over at resume reset (you are deliberately spending the remaining quota; a window over threshold with an unknown reset time is not held); any other window crossing the threshold, `/limitless park`, `off` then `on`, or a real limit error still parks |
-| `/limitless park` | Park in the session now, but only if the current usage already calls for a park. Otherwise it says no decision is available |
+| `/limitless park` | Park in the session now, but only if the current usage already calls for a park. Otherwise (usage under the threshold, or no usage decision yet) it parks nothing and prints one Korean line saying so |
 | `/limitless off` / `on` | Turn off / on for this session |
 
 ## What it never does

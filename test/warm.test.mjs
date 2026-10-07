@@ -12,7 +12,7 @@ function fixture({
   provider = "anthropic-subscription", intervalMs = 55 * 60_000, warmOn = true,
   model = { provider: "openai-codex-responses", id: "gpt-5.6-sol" },
   resolvePromptCacheLifetime = () => ({ kind: "ttl", ttlSeconds: 1800 }),
-    idle = true, latecomer = false, env = {},
+    idle = true, latecomer = false, env = {}, requireTtlSeconds,
 } = {}) {
   const homeDir = mkdtempSync(join(tmpdir(), "limitless-warm-"));
   const handlers = new Map();
@@ -29,7 +29,7 @@ function fixture({
       on(name, fn) { handlers.set(name, [...(handlers.get(name) ?? []), fn]); },
       sendMessage(message, options) { sent.push({ message, options }); },
     },
-    state: { parkState: "park-wait", source: "poll", resetAt: 100_000_000, warm: { on: warmOn, intervalMs } },
+    state: { parkState: "park-wait", source: "poll", resetAt: 100_000_000, warm: { on: warmOn, intervalMs, ...(requireTtlSeconds === undefined ? {} : { requireTtlSeconds }) } },
     now: () => now, enabled: () => true, ownedGoalId: () => "g1", canWarm() { return core.state.parkState === "park-wait" && core.state.warm?.on === true && core.state.source !== "reactive"; },
     readGoal: async () => ({ id: "g1", status: "paused" }),
     isLatecomer: () => latecomer, persist() {}, recordError(where, error) { core.lastError = { where, message: String(error) }; },
@@ -304,4 +304,58 @@ test("real core blocks every tool in a warm turn (no warm.mjs tool_call handler 
   const [turn] = await h.runQueuedTurns(["exec", "task"]);
   assert.deepEqual(turn.executed, []);
   assert.deepEqual(turn.blocked.map((item) => item.toolName), ["exec", "task"]);
+});
+
+test("Codex warm honors the policy's requireTtlSeconds and defaults to 1800", async (t) => {
+  const long = fixture({
+    provider: "chatgpt-subscription", intervalMs: 27 * 60_000, requireTtlSeconds: 3600,
+    resolvePromptCacheLifetime: () => ({ kind: "ttl", ttlSeconds: 3600 }),
+  });
+  t.after(() => long.cleanup());
+  await long.boundary("session_start");
+  assert.equal(long.timers.get("warm").at, 27 * 60_000, "a 3600 s requirement accepts a 3600 s TTL");
+
+  const mismatch = fixture({
+    provider: "chatgpt-subscription", intervalMs: 27 * 60_000, requireTtlSeconds: 3600,
+    resolvePromptCacheLifetime: () => ({ kind: "ttl", ttlSeconds: 1800 }),
+  });
+  t.after(() => mismatch.cleanup());
+  await mismatch.boundary("session_start");
+  assert.equal(mismatch.timers.size, 0, "a 1800 s TTL no longer satisfies a 3600 s requirement");
+
+  const unset = fixture({
+    provider: "chatgpt-subscription", intervalMs: 27 * 60_000,
+    resolvePromptCacheLifetime: () => ({ kind: "ttl", ttlSeconds: 3600 }),
+  });
+  t.after(() => unset.cleanup());
+  await unset.boundary("session_start");
+  assert.equal(unset.timers.size, 0, "without a configured requirement the default stays 1800");
+});
+
+test("a warm turn is skipped while senpi has pending messages and retried on the next interval", async (t) => {
+  const h = fixture();
+  t.after(() => h.cleanup());
+  await h.boundary("session_start");
+  let pending = true;
+  h.ctx.hasPendingMessages = () => pending;
+  await h.fireTimer();
+  assert.equal(h.sent.length, 0);
+  assert.ok(h.timers.has("warm"), "rescheduled");
+  pending = false;
+  await h.fireTimer();
+  assert.equal(h.sent.length, 1);
+});
+
+test("a warm timer callback running across a session reset sends nothing and reschedules nothing", async (t) => {
+  const h = fixture();
+  t.after(() => h.cleanup());
+  await h.boundary("session_start");
+  let epoch = 0;
+  const stale = () => epoch !== 0;
+  h.core.readGoal = async () => { epoch = 1; return { id: "g1", status: "paused" }; }; // the reset lands during the read
+  const timer = h.timers.get("warm");
+  h.timers.delete("warm");
+  await timer.fn(h.ctx, stale);
+  assert.equal(h.sent.length, 0);
+  assert.equal(h.timers.has("warm"), false);
 });

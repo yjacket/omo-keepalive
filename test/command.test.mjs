@@ -165,3 +165,14 @@ test("busy release queues no message and restarts the goal once at agent_settled
   await h.fire("agent_settled", { type: "agent_settled" });
   assert.equal(h.eventsEmitted.filter((event) => event.name === "goal_store_changed").length, 1);
 });
+
+test("manual park under the threshold parks nothing and prints one Korean line saying so", async (t) => {
+  const h = await setup(t);
+  await h.command.handler("resume", h.ctx);
+  h.core.state.decision = { state: "ok", window: null, resetAt: null, reason: null };
+  const before = h.notifications.length;
+  await h.command.handler("park", h.ctx);
+  assert.equal(h.core.state.parkState, "ok");
+  assert.equal(h.notifications.length - before, 1);
+  assert.match(h.notifications.at(-1).text, /^limitless: 지금은 사용량이 임계치 아래/);
+});

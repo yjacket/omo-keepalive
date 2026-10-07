@@ -96,7 +96,7 @@ export function install(core) {
       if (action === "park") {
         const decision = core.getPolicy();
         if (!decision || !["park-wait", "park-exit"].includes(decision.state)) {
-          ctx.ui?.notify?.("limitless: no usage decision available to force park", "info");
+          ctx.ui?.notify?.("limitless: 지금은 사용량이 임계치 아래이거나 아직 판정이 없어 한도 대기를 걸지 않았습니다", "info");
           return;
         }
         core.state.resumeHold = null; // a forced park wins over a resume hold

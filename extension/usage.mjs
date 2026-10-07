@@ -215,7 +215,7 @@ function codexbarFallback(deps, provider, account) {
       };
       const timer = (deps.setTimeout || setTimeout)(() => {
         if (child.pid && (deps.platform || process.platform) === "win32") {
-          try { (deps.execFileSync || defaultExecFileSync)("taskkill", ["/pid", String(child.pid), "/T", "/F"], { windowsHide: true }); }
+          try { (deps.execFileSync || defaultExecFileSync)("taskkill", ["/pid", String(child.pid), "/T", "/F"], { windowsHide: true, timeout: 5000 }); }
           catch { child.kill(); }
         } else child.kill();
         finish(null);
