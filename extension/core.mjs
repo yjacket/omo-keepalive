@@ -568,12 +568,14 @@ export function createCore(pi, { config, deps = {} } = {}) {
   }
 
   async function snapshotFor(provider, account, t) {
-    const shared = readSharedSnapshot({ homeDir, provider, account, fs });
+    // Test-only fake usage source: never read nor write the shared per-account snapshot.
+    const fakeMode = Boolean(env?.OMO_LIMITLESS_FAKE_USAGE_FILE);
+    const shared = fakeMode ? null : readSharedSnapshot({ homeDir, provider, account, fs });
     // A shared snapshot whose window already reset is stale whatever its age: read the endpoint instead.
     const pastReset = (shared?.snapshot?.windows ?? []).some((w) => Number.isFinite(w?.resetAt) && w.resetAt <= t);
     if (shared && !pastReset && t >= shared.observedAt && t - shared.observedAt < config.pollMinIntervalMs) return shared.snapshot;
     const snapshot = await readUsage({ provider, account }, { env, homeDir, now, pollMinIntervalMs: config.pollMinIntervalMs });
-    if (snapshot && snapshot.source !== "none") writeSharedSnapshot({ homeDir, snapshot, observedAt: t, fs });
+    if (snapshot && snapshot.source !== "none" && snapshot.source !== "fake" && !fakeMode) writeSharedSnapshot({ homeDir, snapshot, observedAt: t, fs });
     return snapshot;
   }
 
