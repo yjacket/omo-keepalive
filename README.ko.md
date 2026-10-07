@@ -74,7 +74,7 @@ Get-ScheduledTask -TaskPath \omo-limitless\ | Unregister-ScheduledTask -Confirm:
 | 명령 | 하는 일 |
 |---|---|
 | `/limitless status` | 여섯 줄 출력: 상태 줄(대기 중이 아니면 `⏸ 한도 대기 없음`), `상태:` 한도 대기 상태, `사용량:` 창별 사용률, `리셋:` 리셋 시각(HH:MM, 다른 날이면 M/D HH:MM, 모르면 `unknown`), `출처:` 사용량 출처, `스위치:` 켜짐/꺼짐 |
-| `/limitless resume` | 한도 대기를 풀고 바로 재개 |
+| `/limitless resume` | 한도 대기를 풀고 바로 재개. 여전히 임계치 위여도 재개 시점에 넘어 있던 창들이 리셋될 때까지 다시 대기하지 않는다(남은 사용량을 일부러 쓰는 것. 리셋 시각을 모르는 창은 보유하지 않는다). 그 밖의 창이 임계치를 넘거나, `/limitless park`, `off` 뒤 `on`, 실제 한도 오류가 나면 다시 대기한다 |
 | `/limitless park` | 지금 세션 안에서 한도 대기. 현재 사용량이 이미 park 판정일 때만 동작하고, 아니면 판정이 없다고 알린다 |
 | `/limitless off` / `on` | 이 세션에서 끄기 / 켜기 |
 

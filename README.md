@@ -74,7 +74,7 @@ Get-ScheduledTask -TaskPath \omo-limitless\ | Unregister-ScheduledTask -Confirm:
 | Command | Does |
 |---|---|
 | `/limitless status` | Print six lines in Korean: the status line (`⏸ 한도 대기 없음` when not parked), `상태:` park state, `사용량:` usage per window, `리셋:` reset time (HH:MM, M/D HH:MM on another day, or `unknown`), `출처:` usage source, `스위치:` 켜짐/꺼짐 |
-| `/limitless resume` | Lift the park and resume now |
+| `/limitless resume` | Lift the park and resume now. While still over threshold it does not re-park until the windows that were over at resume reset (you are deliberately spending the remaining quota; a window over threshold with an unknown reset time is not held); any other window crossing the threshold, `/limitless park`, `off` then `on`, or a real limit error still parks |
 | `/limitless park` | Park in the session now, but only if the current usage already calls for a park. Otherwise it says no decision is available |
 | `/limitless off` / `on` | Turn off / on for this session |
 

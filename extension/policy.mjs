@@ -3,6 +3,26 @@
  * Determines parking state based on usage snapshots and config
  */
 
+// Windows over threshold as Map<kind, earliest finite resetAt | null>, with policy's park rule: empty unless EVERY
+// account of the provider has an over window (union of the over kinds across accounts otherwise).
+export function overWindows({ snapshots, config }) {
+  const provider = snapshots?.[0]?.provider;
+  const own = (snapshots ?? []).filter((s) => s?.provider === provider && Array.isArray(s.windows));
+  const kinds = new Map();
+  let accountsOver = 0;
+  for (const snapshot of own) {
+    const over = snapshot.windows.filter((w) =>
+      w.utilization >= (w.kind === "five_hour" ? config.thresholds.fiveHour : config.thresholds.sevenDay));
+    if (over.length > 0) accountsOver += 1;
+    for (const w of over) {
+      const known = Number.isFinite(w.resetAt) ? w.resetAt : null;
+      const prev = kinds.get(w.kind);
+      kinds.set(w.kind, prev === undefined || prev === null ? known : known === null ? prev : Math.min(prev, known));
+    }
+  }
+  return own.length > 0 && accountsOver === new Set(own.map((s) => s.account)).size ? kinds : new Map();
+}
+
 export function decide({ snapshots, config, now }) {
   // Edge cases: empty or source "none"
   if (!snapshots || snapshots.length === 0) {

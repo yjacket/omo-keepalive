@@ -89,6 +89,7 @@ export function install(core) {
         // core.park, which normalizes an unknown or past reset to park-wait/null (resume.mjs re-checks).
         active = false;
         core.timers.clear("reactive-check");
+        core.state.snapshots = snapshots; // /limitless resume derives its hold from the current readings
         await core.park(verdict, { source: "poll" });
         return;
       } catch (error) {

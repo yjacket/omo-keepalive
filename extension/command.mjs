@@ -3,6 +3,7 @@ import { mkdirSync, readFileSync, renameSync, unlinkSync, writeFileSync } from "
 import { dirname, join } from "node:path";
 import { readJson, sanitizeId } from "./state.mjs";
 import { hhmm, statusText } from "./core.mjs";
+import { overWindows } from "./policy.mjs";
 
 function formatStateKorean(parkState) {
   const stateMap = {
@@ -37,6 +38,7 @@ export function install(core) {
     const mode = control?.v === 1 && (control.mode === "on" || control.mode === "off") ? control.mode : "on";
     const wasOff = core.state.mode === "off";
     core.state.mode = mode;
+    if (mode === "off") core.state.resumeHold = null;
     core.persist();
     if (mode === "off" && core.isParked()) {
       await core.release({ reason: "control-off" });
@@ -87,6 +89,7 @@ export function install(core) {
       if (action === "off" || action === "on") {
         writeControl(action);
         core.state.mode = action;
+        core.state.resumeHold = null; // turning gating off/on means normal behavior again
         core.persist();
       }
 
@@ -96,8 +99,20 @@ export function install(core) {
           ctx.ui?.notify?.("limitless: no usage decision available to force park", "info");
           return;
         }
+        core.state.resumeHold = null; // a forced park wins over a resume hold
         await core.park({ ...decision, state: "park-wait" }, { source: "manual" });
       } else if (action === "resume" || action === "off") {
+        // resume while over threshold: do not re-park for this same window until its resetAt
+        if (action === "resume" && core.isParked() && core.state.source !== "reactive") {
+          const { window, resetAt } = core.state;
+          const windows = Object.fromEntries([...overWindows({ snapshots: core.state.snapshots, config: core.config })]
+            .filter(([, reset]) => Number.isFinite(reset) && reset > core.now()));
+          // snapshots yielding no over window (stale readings): fall back to the parked window itself
+          if (Object.keys(windows).length === 0 && window && window !== "unknown" && Number.isFinite(resetAt) && resetAt > core.now()) {
+            windows[window] = resetAt;
+          }
+          core.state.resumeHold = Object.keys(windows).length > 0 ? { windows } : null;
+        }
         if (core.isParked()) await core.release({ reason: action === "off" ? "manual-off" : "manual" });
         await core.releaseOwnedGoal({ reason: action === "off" ? "manual-off" : "manual" });
       } else if (action === "on" && core.enabled()) {

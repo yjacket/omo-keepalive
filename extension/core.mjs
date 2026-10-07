@@ -98,7 +98,7 @@ import * as nodeFs from "node:fs";
 import { homedir } from "node:os";
 import { dirname, join } from "node:path";
 import { pathToFileURL } from "node:url";
-import { decide } from "./policy.mjs";
+import { decide, overWindows } from "./policy.mjs";
 import { readAuthJson, resolveLane } from "./lane.mjs";
 import { readUsage as defaultReadUsage } from "./usage.mjs";
 import { loadState, readSharedSnapshot, saveState, statePath, writeSharedSnapshot } from "./state.mjs";
@@ -145,7 +145,7 @@ const freshState = () => ({
   v: 1, parkState: "ok", armed: false, source: null, window: null, util: null, resetAt: null, reason: null,
   warm: null, decision: null, snapshots: [], lastPollAt: null, episode: 0, parkedAt: null, episodeNotified: false,
   latecomer: false, hadPriorTurns: false, pausedByLimitless: null, blocked: 0, mode: "on", lastError: null,
-  lastRelease: null,
+  lastRelease: null, resumeHold: null,
 });
 
 const errText = (error) => String(error instanceof Error ? error.message : error);
@@ -492,8 +492,13 @@ export function createCore(pi, { config, deps = {} } = {}) {
       const decision = await measure(t);
       core.state.decision = decision;
       core.state.lastPollAt = t;
+      expireResumeHold();
       core.persist();
-      if (decision.state === "park-wait" || decision.state === "park-exit") {
+      const hold = core.state.resumeHold;
+      // /limitless resume holds the SAME window until its resetAt; any over window outside the held set, or an already parked session, is not held.
+      const over = hold ? overWindows({ snapshots: core.state.snapshots, config }) : null;
+      const held = Boolean(hold) && !core.isParked() && over.size > 0 && [...over.keys()].every((kind) => kind in hold.windows);
+      if (!held && (decision.state === "park-wait" || decision.state === "park-exit")) {
         await core.park(decision, { source: "poll" });
       } else if (decision.state === "ok" && (core.isParked() ? (anySource || core.state.source === "poll") : staleOwnedGoal)) {
         if (core.isParked()) await core.release({ reason: "usage-ok" });
@@ -625,6 +630,14 @@ export function createCore(pi, { config, deps = {} } = {}) {
     return true;
   }
 
+  function expireResumeHold() {
+    // resumeHold = {windows: {kind: resetAt}}: each held window expires at its own resetAt; an empty set is no hold.
+    const hold = core.state.resumeHold;
+    if (!hold) return;
+    const live = Object.fromEntries(Object.entries(hold.windows ?? {}).filter(([, resetAt]) => Number.isFinite(resetAt) && resetAt > now()));
+    core.state.resumeHold = Object.keys(live).length > 0 ? { windows: live } : null;
+  }
+
   function startSession(ctx) {
     if (loadSession(ctx)) applySession();
   }
@@ -643,6 +656,7 @@ export function createCore(pi, { config, deps = {} } = {}) {
     if (Array.isArray(branch) && branch.some((e) => e?.type === "message" && e.message?.role === "assistant")) {
       core.state.hadPriorTurns = true;
     }
+    expireResumeHold();
     if (PARKED.has(core.state.parkState) && core.state.armed) {
       if (!(Number.isFinite(core.state.resetAt) && core.state.resetAt > now())) {
         // A park whose reset already passed is not re-applied; only a fresh decision can park again.
