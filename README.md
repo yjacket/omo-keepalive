@@ -16,7 +16,7 @@ Then type `/reload` in a running omo session.
 
 ## What it does
 
-- While a goal runs, it parks at the next turn boundary once the 5h window reaches 90% or the 7d window reaches 95%. The status line then shows `⏸ 한도 대기 · HH:MM 재개` (the Korean for "limit wait, resumes at HH:MM").
+- While a goal runs, it parks at the next turn boundary once the 5h window reaches 90% or the 7d window reaches 95%. The status line then shows `⏸ 한도 대기 · HH:MM 재개` today, or `⏸ 한도 대기 · M/D HH:MM 재개` when the reset is on another day.
 - If the reset is within the lane's `waitLimitMs`, it waits in the session. Otherwise it writes a park record, exits, and gets relaunched at reset.
 - While waiting it sends warm turns so the prompt cache stays alive.
 - After the reset time (plus `resumeGraceMs`) it resumes the goal.
