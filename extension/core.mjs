@@ -87,11 +87,16 @@
 //                                            drop its effects instead of acting on the next session's state.
 // core.markExtensionTurn(kind)               mark the current agent run as a goal-race or warm turn (call from
 //                                            before_agent_start). core.blockAllToolsInTurn() -> boolean, core.turn -> {kind}
-// run marking (goalRun)                      set by a goal-continuation or senpi.todo-owed message_start, or by a
-//                                            continuation seen at before_agent_start. Cleared by a user-role
-//                                            message_start, the final agent_end (willRetry keeps it), agent_settled
-//                                            and session reset. Every tool_call is blocked only while parked AND
-//                                            limitless holds the goal paused; a user run blocks only task/task_create.
+// run marking (goalRun)                      every run the user did not start: before_agent_start with trigger
+//                                            "extension" (senpi runner.js:1717 defaults a typed prompt to "prompt"; a
+//                                            triggerTurn custom message passes "extension", agent-session.js:4293), or a
+//                                            custom-role message_start in a run no user message started (a followUp
+//                                            run has no before_agent_start; the user message precedes the custom
+//                                            messages of a typed prompt, agent-session.js:3770-3790). Cleared by a
+//                                            user-role message_start (which also marks the run user-started), the final
+//                                            agent_end (willRetry keeps it), agent_settled and session reset. Every
+//                                            tool_call is blocked only while parked AND limitless holds the goal
+//                                            paused; a user run blocks only task/task_create.
 // core.setControlReader(fn(ctx, kind))       control-file hook (todo 9): awaited at the start of every boundary
 //                                            and timer tick; it may change state.mode or call release()
 // core.now(), core.hhmm(ms)                  injected clock; HH:MM today, M/D HH:MM on another local day
@@ -114,14 +119,6 @@ export const STATUS_KEY = "limitless";
 export const SPAWN_TOOLS = new Set(["task", "task_create"]);
 export const NOTICE_WIDGET_KEY = "limitless-notice";
 export const GOAL_CONTINUATION_PREFIX = "Continue working toward the active thread goal.";
-// senpi dist/core/messages.js GOAL_CONTINUATION_MESSAGE_TYPE: the custom message the goal extension queues for a
-// continuation (goal/lifecycle-helpers.js queueHiddenGoalPrompt: sendMessage {triggerTurn, deliverAs:"followUp"}).
-export const GOAL_CONTINUATION_TYPE = "goal-continuation";
-// senpi goal/todo-owed-backstop.js:13 TODO_OWED_CUSTOM_TYPE, queued at :137 (sendMessage {triggerTurn, deliverAs:"followUp"}):
-// the reminder run it starts is autonomous goal-adjacent work, so while limitless holds the goal paused it is treated
-// exactly like a goal continuation.
-export const TODO_OWED_TYPE = "senpi.todo-owed";
-const AUTO_RUN_TYPES = new Set([GOAL_CONTINUATION_TYPE, TODO_OWED_TYPE]);
 const SUBSCRIPTION = new Set(["anthropic-subscription", "chatgpt-subscription"]);
 const PARKED = new Set(["park-wait", "park-exit"]);
 const MAX_TIMER_MS = 2147483647;
@@ -252,7 +249,11 @@ export function createCore(pi, { config, deps = {} } = {}) {
   // releaseOwnedGoal un-paused the goal while a run was active: emit goal_store_changed at agent_settled unless a run
   // starts first (then the goal extension's own agent_end continuation owns the restart).
   let pendingKick = false;
-  let goalRun = false; // the current agent run is the goal's own (goal-continuation message); user runs are never blocked (IS-6)
+  let goalRun = false; // the current agent run was not started by the user (any custom message / extension trigger)
+  // Prompts that extensions send with pi.sendUserMessage (/loop ticks, Stop-hook follow-ups, ask-user answers) run as
+  // trigger "prompt" exactly like typed input and count as user-started: the user's own prompt (and the custom
+  // messages of its run) must never lose its tools (IS-6).
+  let userRun = false; // a user message started or joined the current run: its custom messages do not mark it (IS-6)
 
   const core = {
     pi, deps, config, env, homeDir,
@@ -568,6 +569,7 @@ export function createCore(pi, { config, deps = {} } = {}) {
       core.lastCtx = ctx;
       core.turn = null;
       goalRun = false;
+      userRun = false;
       startSession(ctx);
       await boundary(ctx, "agent_settled");
       if (pendingKick) {
@@ -589,6 +591,7 @@ export function createCore(pi, { config, deps = {} } = {}) {
       if (event?.willRetry === true) return;
       core.turn = null;
       goalRun = false;
+      userRun = false;
     },
     async handleBeforeAgentStart(event, ctx) {
       if (event?.preview === true || vetoed) return undefined;
@@ -598,25 +601,30 @@ export function createCore(pi, { config, deps = {} } = {}) {
       startSession(ctx);
       const continuation = event?.trigger === "extension" && typeof event.prompt === "string"
         && event.prompt.startsWith(GOAL_CONTINUATION_PREFIX);
-      goalRun = continuation;
+      // trigger "extension" (triggerTurn custom message) and "delivery" (another session's message, agent-session.js:4294)
+      // are not user prompts; every "prompt" trigger run is user-started (typed input and pi.sendUserMessage prompts
+      // such as /loop ticks, Stop-hook follow-ups and ask-user answers alike).
+      goalRun = event?.trigger !== "prompt";
+      userRun = !goalRun;
       if (!core.enabled() || !core.isParked()) return undefined;
       if (!(await raceBlock(ctx, continuation))) return undefined;
       return { message: { customType: "limitless-park-note", content: TEXTS.raceNote, display: false } };
     },
-    // senpi emits no before_agent_start for an automatic goal continuation (it runs from the followUp queue:
-    // agent-session.js _scheduleContinuationAfterCurrentEvent :6733; before_agent_start only at :3790 for a prompt and
-    // :4293 for an idle sendMessage), and agent_start carries no payload. The goal's own continuation is a custom
-    // message of type goal-continuation, which senpi announces with message_start before the run's first tool call,
-    // so this is where a goal turn is told apart from a user turn (role "user", never blocked: IS-6).
+    // senpi emits no before_agent_start for a run started from the followUp queue (agent-session.js
+    // _scheduleContinuationAfterCurrentEvent :6733; before_agent_start only at :3790 for a prompt and :4293 for an idle
+    // sendMessage), and agent_start carries no payload. Such a run starts with a custom message (goal-continuation,
+    // senpi.todo-owed, an extension notification, ...) that senpi announces with message_start before the run's first
+    // tool call: any custom message in a run the user did not start marks it (a user-role message: IS-6, never blocked).
     async handleMessageStart(event, ctx) {
       if (vetoed) return;
       if (event?.message?.role === "user") {
         // IS-6: a user message delivered into a running wait turn (steer / followUp into the same run: no
         // before_agent_start) ends the goal-run and wait-turn treatment; only task/task_create stay blocked for it.
         goalRun = false;
+        userRun = true;
         if (core.turn?.kind === "goal-race" || core.turn?.kind === "warm") core.turn = null;
       }
-      if (event?.message?.role !== "custom" || !AUTO_RUN_TYPES.has(event.message.customType)) return;
+      if (event?.message?.role !== "custom" || userRun) return;
       goalRun = true; // a park landing later in this run blocks its remaining tool calls (handleToolCall)
       core.lastCtx = ctx;
       startSession(ctx);
@@ -747,6 +755,7 @@ export function createCore(pi, { config, deps = {} } = {}) {
     lastPollAt = null;
     core.turn = null;
     goalRun = false;
+    userRun = false;
   }
 
   function applySession() {

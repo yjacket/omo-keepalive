@@ -21,7 +21,7 @@ Then type `/reload` in a running omo session.
 - While waiting it sends warm turns so the prompt cache stays alive.
 - After the reset time (plus `resumeGraceMs`) it resumes the goal.
 - If the provider returns a limit error before a poll catches it, it parks reactively. When that error carries no reset time, the status line shows `⏸ 한도 대기 · 재개 시각 미정` ("resume time unknown") and limitless checks usage 30 minutes later. If the limit has cleared, or usage can't be read, it releases the park. If usage still shows the limit, the park becomes a normal usage park, which resumes at the reset time or, when the reset is still unknown, re-checks every `pollMinIntervalMs` (at least 60 s). A failed check retries every 30 minutes, and after 6 hours without a successful check limitless releases the park.
-- While limitless holds your goal paused, automatic follow-up runs (a goal continuation, a todo reminder) run no tools; a message you type still gets every tool except spawning subagents (`task`, `task_create`).
+- While limitless holds your goal paused, automatic runs (goal continuation, todo reminder, notifications, messages from other sessions) run no tools; a message you type - and prompts that `/loop` or hooks send on your behalf - keeps every tool except spawning subagents (`task`, `task_create`). Work already running in the background when the park starts is not stopped.
 
 ## Config
 
