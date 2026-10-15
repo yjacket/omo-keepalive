@@ -105,7 +105,7 @@ test("unknown reset rechecks in 30 minutes and releases when usage is low", asyn
     assert.deepEqual(h.clock.pendingTimers(), [T0 + 30 * 60000]);
     await h.clock.tick(30 * 60000);
     assert.equal(core.isParked(), false);
-    assert.equal(h.statusLines.has("limitless"), false);
+    assert.equal(h.statusLines.get("limitless"), "🔄");
   } finally { h.cleanup(); }
 });
 

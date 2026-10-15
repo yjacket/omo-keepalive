@@ -117,6 +117,9 @@ import { readUsage as defaultReadUsage } from "./usage.mjs";
 import { loadState, readSharedSnapshot, saveState, statePath, writeSharedSnapshot } from "./state.mjs";
 
 export const STATUS_KEY = "limitless";
+// Shown in the status slot while limitless is on and not parked, so the user can see it is watching. A natively
+// wide emoji: the terminal reserves the two cells it draws (a narrow one like ♾️ overflows its single cell).
+export const IDLE_STATUS = "🔄";
 export const SPAWN_TOOLS = new Set(["task", "task_create"]);
 export const NOTICE_WIDGET_KEY = "limitless-notice";
 export const GOAL_CONTINUATION_PREFIX = "Continue working toward the active thread goal.";
@@ -284,12 +287,20 @@ export function createCore(pi, { config, deps = {} } = {}) {
       core.state.lastError = { at: now(), where, message: errText(error) };
       core.persist();
     },
+    // undefined means "not parked": the idle mark while on, cleared while off or vetoed.
     setStatus(text) {
-      try { core.lastCtx?.ui?.setStatus?.(STATUS_KEY, text); } catch (error) { core.state.lastError = { at: now(), where: "status", message: errText(error) }; }
+      try {
+        const ui = core.lastCtx?.ui;
+        const idle = !vetoed && core.enabled() ? (ui?.theme?.fg?.("dim", IDLE_STATUS) ?? IDLE_STATUS) : undefined;
+        ui?.setStatus?.(STATUS_KEY, text ?? idle);
+      } catch (error) { core.state.lastError = { at: now(), where: "status", message: errText(error) }; }
     },
     // The persistent park / goal-held notice: one TUI widget (ctx.ui.setWidget, senpi extensions/types.d.ts:153), text
     // replaced per state, undefined clears. A widget is UI chrome, never a session entry or an LLM message, so it can
     // never reach a model request (custom messages are converted to role:user by every compaction/btw path).
+    refreshStatus() {
+      core.setStatus(core.isParked() ? statusText(core.state.resetAt, now()) : undefined);
+    },
     setNotice(text) {
       try { core.lastCtx?.ui?.setWidget?.(NOTICE_WIDGET_KEY, text === undefined ? undefined : [text]); } catch (error) { core.state.lastError = { at: now(), where: "notice", message: errText(error) }; }
     },
@@ -552,6 +563,7 @@ export function createCore(pi, { config, deps = {} } = {}) {
       }
       if (loaded) applySession();
       await boundary(ctx, "session_start");
+      core.refreshStatus();
     },
     handleSessionShutdown() {
       if (vetoed || core.sessionId === null) return;

@@ -62,7 +62,7 @@ test("resume holds the same window: polls never re-park until its resetAt", asyn
   }
   assert.equal(core.state.decision.state, "park-wait", "the poll still sees the window over threshold");
   assert.equal(h.goalStore.goal.status, "active");
-  assert.equal(h.statusLines.get("limitless"), undefined);
+  assert.equal(h.statusLines.get("limitless"), "🔄");
   assert.equal(h.notice(), undefined);
 });
 

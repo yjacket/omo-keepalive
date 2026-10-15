@@ -32,7 +32,7 @@ test("reset re-poll OK releases park and sends resume message", async () => {
     await s.h.clock.tick(61000);
     assert.equal(s.core.isParked(), false);
     assert.deepEqual(s.h.sentUserMessages, []);
-    assert.equal(s.h.statusLines.has("limitless"), false);
+    assert.equal(s.h.statusLines.get("limitless"), "🔄");
   } finally { s.h.cleanup(); }
 });
 

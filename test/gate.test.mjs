@@ -2,7 +2,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import { createHarness, GOAL_CONTINUATION_TEXT } from "./harness.mjs";
 import { startLimitless } from "../extension/limitless.mjs";
-import { hhmm, statusText, STATUS_KEY, TEXTS } from "../extension/core.mjs";
+import { hhmm, statusText, STATUS_KEY, IDLE_STATUS, TEXTS } from "../extension/core.mjs";
 import { snapshotPath, statePath, writeSharedSnapshot } from "../extension/state.mjs";
 import { existsSync, readFileSync, writeFileSync, mkdirSync } from "node:fs";
 import { dirname } from "node:path";
@@ -266,7 +266,7 @@ test("usage reader throws: no park, no block, error recorded in the state file",
     const turn = await h.runTurn({ tools: ["task"] });
     assert.deepEqual(turn.executed, ["task"]);
     assert.equal(core.isParked(), false);
-    assert.equal(h.statusLines.has(STATUS_KEY), false);
+    assert.equal(h.statusLines.get(STATUS_KEY), IDLE_STATUS);
     assert.equal(h.goalStore.goal.status, "active");
     assert.equal(state().lastError.message, "boom endpoint");
     assert.equal(state().parkState, "ok");
@@ -335,7 +335,7 @@ test("a state file whose reset already passed does not re-park; the owned goal r
     try {
       await h.fire("session_start", { type: "session_start", reason: "resume" });
       assert.equal(core.isParked(), false);
-      assert.equal(h.statusLines.has(STATUS_KEY), false);
+      assert.equal(h.statusLines.get(STATUS_KEY), IDLE_STATUS);
       assert.equal(h.goalStore.goal.status, "active");
       assert.deepEqual(h.goalStore.setStatusCalls, ["active"]);
       assert.equal(h.eventsEmitted.filter((e) => e.name === "goal_store_changed").length, 1);
@@ -432,7 +432,7 @@ for (const source of ["poll", "manual", "reactive"]) {
         await core.resetDue();
       }
       assert.equal(core.isParked(), false);
-      assert.equal(h.statusLines.has(STATUS_KEY), false);
+      assert.equal(h.statusLines.get(STATUS_KEY), IDLE_STATUS);
       assert.equal(h.goalStore.goal.status, "active");
       assert.deepEqual(h.goalStore.setStatusCalls, ["paused", "active"]);
       assert.equal(goalEmits(h).length, 1);
@@ -507,7 +507,7 @@ test("reset with a goal the user paused (other id, paused before the park, or no
       h.clock.advance(RESET + 60000 - h.clock.now());
       await core.resetDue();
       assert.equal(core.isParked(), false, name);
-      assert.equal(h.statusLines.has(STATUS_KEY), false, name);
+      assert.equal(h.statusLines.get(STATUS_KEY), IDLE_STATUS, name);
       if (c.goal) assert.equal(h.goalStore.goal.status, "paused", name);
       assert.deepEqual(h.goalStore.setStatusCalls, callsBefore, `${name}: no un-pause`);
       assert.equal(h.sentUserMessages.length, 0, name);

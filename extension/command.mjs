@@ -46,6 +46,7 @@ export function install(core) {
     } else if (wasOff && mode === "on" && core.enabled()) {
       await core.poll({ force: true });
     }
+    if (wasOff !== (mode === "off")) core.refreshStatus();
   });
 
   const usage = "Usage: /limitless status|resume|park|off|on";
@@ -118,6 +119,7 @@ export function install(core) {
       } else if (action === "on" && core.enabled()) {
         await core.poll({ force: true });
       }
+      if (action === "off" || action === "on") core.refreshStatus();
     },
   });
 }

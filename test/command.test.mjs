@@ -81,6 +81,18 @@ test("status reports parked unknown reset and clears line when not parked", asyn
   assert.equal(lines[0], "⏸ 한도 대기 없음");
 });
 
+test("status slot: idle mark when not parked, cleared by off, back on on", async (t) => {
+  const h = await setup(t);
+  await h.command.handler("resume", h.ctx);
+  assert.equal(h.statusLines.get("limitless"), "🔄");
+  await h.command.handler("off", h.ctx);
+  assert.equal(h.statusLines.has("limitless"), false);
+  h.writeHomeJson("usage.json", { "anthropic-subscription": { five_hour: { utilization: 10, resetAt: 1_700_000_060_000 } } });
+  await h.command.handler("on", h.ctx);
+  assert.equal(h.core.isParked(), false);
+  assert.equal(h.statusLines.get("limitless"), "🔄");
+});
+
 test("a user message during park runs normally but keeps goal paused and task blocked", async (t) => {
   const h = await setup(t);
   const result = await h.runTurn({ prompt: "hello", tools: ["task"] });
