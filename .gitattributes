@@ -1,0 +1,2 @@
+# install.sh keeps LF on every checkout: sh (and Git Bash) fail on CRLF.
+*.sh text eol=lf
