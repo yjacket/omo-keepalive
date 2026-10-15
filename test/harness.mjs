@@ -63,6 +63,15 @@ export function createHarness({
       return { ...goalStore.goal };
     },
   };
+  // Stand-in for extension/selflaunch.mjs, whose real register() creates a Windows scheduled task through PowerShell.
+  // deps() always supplies it, so a test that reaches a park-exit decision in an unknown terminal cannot touch the
+  // machine. This world has no relauncher: register fails (park-exit holds in park-wait), unregister finds no task.
+  const selfLaunchCalls = [];
+  const fakeSelfLaunch = {
+    register: async (request) => { selfLaunchCalls.push({ op: "register", ...request }); return { ok: false, reason: "test harness: no self-launch" }; },
+    unregister: async (request) => { selfLaunchCalls.push({ op: "unregister", ...request }); return { ok: true, gone: true }; },
+  };
+  const fakeResolveLauncher = async () => ({ exe: "omo", args: [] });
   const pi = {
     // Senpi ExtensionAPI.on registers an event handler; this fake retains all handlers.
     on: (name, handler) => register(handlers, name, handler),
@@ -131,7 +140,7 @@ export function createHarness({
   };
   const harness = {
     pi, ctx, handlers, commands, statusLines, widgets, notifications, sentMessages, sentUserMessages,
-    shutdownCalls, eventsEmitted, clock, tmpHome, goalStore, queuedTurns,
+    shutdownCalls, eventsEmitted, clock, tmpHome, goalStore, queuedTurns, selfLaunchCalls,
     fire,
     // Text of the persistent limitless notice widget (undefined when cleared).
     notice: () => widgets.get("limitless-notice")?.join("\n"),
@@ -143,6 +152,8 @@ export function createHarness({
       return {
         env, homeDir: tmpHome, now: clock.now, setTimeout: pi.setTimeout, clearTimeout: pi.clearTimeout,
         goalStore, ...extra,
+        // After the spread: an explicit `selfLaunch: undefined` (park-exit.test.mjs proc) must not reach the real module either.
+        selfLaunch: extra.selfLaunch ?? fakeSelfLaunch, resolveLauncher: extra.resolveLauncher ?? fakeResolveLauncher,
       };
     },
     writeHomeJson(relativePath, data) {

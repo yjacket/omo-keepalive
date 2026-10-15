@@ -6,6 +6,7 @@ import { join } from "node:path";
 import { createHarness } from "./harness.mjs";
 import { startLimitless } from "../extension/limitless.mjs";
 import { ackName, CLAIM_FRESH_MS, parksDir, recordName, startName, RELAUNCH_REPARK_LIMIT } from "../extension/park-exit.mjs";
+import { resolveLauncher as realResolveLauncher, selfLaunch as realSelfLaunch } from "../extension/selflaunch.mjs";
 
 const T0 = Date.UTC(2026, 9, 7, 3, 0, 0);
 const RESET = T0 + 5 * 3600000; // beyond the 4h Claude wait limit -> park-exit
@@ -563,6 +564,29 @@ test("held park-wait resumes through todo 7 at reset (no stranding)", async () =
     assert.equal(p.h.goalStore.goal.status, "active");
     assert.equal(p.h.shutdownCalls.length, 0);
   } finally { p.h.cleanup(); }
+});
+
+test("harness default: a park-exit decision in an unknown terminal goes to the harness fake, never the real self-launch module", async () => {
+  // A valid (8+ character) session id: with "s1" the real module would reject the id before any PowerShell call.
+  const h = createHarness({ sessionId: "harness-default", model: CLAUDE, branch: PRIOR_TURN, goal: GOAL, now: T0, env: {} });
+  try {
+    // Checked before anything runs: with the real module in place the flow below would register a Windows scheduled task.
+    for (const deps of [h.deps(), h.deps({ selfLaunch: undefined, resolveLauncher: undefined })]) {
+      assert.equal(typeof deps.selfLaunch?.register, "function");
+      assert.equal(typeof deps.resolveLauncher, "function");
+      assert.notEqual(deps.selfLaunch, realSelfLaunch);
+      assert.notEqual(deps.resolveLauncher, realResolveLauncher);
+    }
+    h.writeHomeJson(".omo/agent/auth.json", { "anthropic-subscription": { access: "not-a-real-token" } });
+    const core = startLimitless(h.pi, h.deps({ readUsage: async () => snap(95), pid: 1001, isPidAlive: () => true,
+      processStartTime: startTime, parkExitStartGraceMs: 0 }));
+    await h.fire("session_start", { type: "session_start", reason: "startup" });
+    await h.fire("agent_settled", { type: "agent_settled" });
+    assert.ok(h.selfLaunchCalls.length > 0, "the exit path asked for a relauncher");
+    assert.ok(h.selfLaunchCalls.every((call) => call.op === "register" && call.sessionId === "harness-default"));
+    assert.equal(core.state.parkExit.holdReason, "no-relauncher");
+    assert.equal(h.shutdownCalls.length, 0);
+  } finally { h.cleanup(); }
 });
 
 test("terminal.kind unknown with a registered self-launch -> record kind self + selfTask, shutdown", async () => {
