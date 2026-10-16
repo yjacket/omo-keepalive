@@ -1,6 +1,11 @@
 {
   "name": "omo-limitless",
   "type": "module",
+  "pi": {
+    "extensions": [
+      "extension/limitless.mjs"
+    ]
+  },
   "scripts": {
     "test": "node --test"
   }

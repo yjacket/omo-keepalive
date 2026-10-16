@@ -1,2 +1,2 @@
-# install.sh keeps LF on every checkout: sh (and Git Bash) fail on CRLF.
+# keep LF on every checkout.
 *.sh text eol=lf

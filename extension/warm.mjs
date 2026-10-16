@@ -25,7 +25,7 @@ async function loadResolver(core) {
     const starts = [
       process.argv[1],
       env.OMO_BIN,
-      // Installed extensions sit at <home>/.omo/agent/extensions/omo-limitless.
+      // The installed package sits at <home>/.omo/agent/git/github.com/yjacket/omo-limitless.
       // Walk upward from this module too, without assuming a particular user's home.
       resolverStartDirectory(),
     ].filter(Boolean);

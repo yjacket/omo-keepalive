@@ -7,23 +7,15 @@ goal이 도는 OMO 세션이 구독 사용량 한도에 닿으면 세션을 한�
 
 ## 설치
 
-클론 없이 한 줄로 설치한다. Windows (PowerShell 5.1):
-
-```powershell
-irm https://raw.githubusercontent.com/yjacket/omo-limitless/master/install.ps1 | iex
-```
-
-Linux, macOS:
-
 ```sh
-curl -fsSL https://raw.githubusercontent.com/yjacket/omo-limitless/master/install.sh | sh
+omo install git:github.com/yjacket/omo-limitless
 ```
 
-스크립트가 이 저장소의 `master` 브랜치를 받아 `extension/` 폴더를 `~/.omo/agent/extensions/omo-limitless/`(또는 `OMO_CODING_AGENT_DIR`가 가리키는 폴더 아래)에 설치한다. 새 폴더를 옆에 만든 뒤 기존 폴더와 바꾸므로, 업데이트 중에 옛 파일과 새 파일이 섞이지 않는다. 클론한 폴더에서 `.\install.ps1`이나 `sh install.sh`로 실행하면 받지 않고 그 폴더의 파일을 복사한다. 그다음 실행 중인 omo 세션에서 `/reload`를 입력한다.
+omo가 저장소를 `~/.omo/agent/git/github.com/yjacket/omo-limitless`에 클론하고 `~/.omo/agent/settings.json`의 `packages`에 등록한다. 실행 중인 세션에서 `/reload`를 입력한다.
 
-Windows에서는 PowerShell 줄을 쓴다. Git Bash의 curl은 Windows 인증서 저장소를 읽지 않아 인증서 오류(60)로 실패할 수 있다.
+**업데이트:** `omo update --extensions`(설치된 패키지 전부) 또는 `omo update git:github.com/yjacket/omo-limitless`를 실행한 뒤 `/reload`를 입력한다.
 
-**업데이트:** 같은 줄을 다시 실행한다.
+예전 복사 스크립트로 설치했다면 `~/.omo/agent/extensions/omo-limitless/`를 지운다. 남겨 두면 패키지와 함께 로드된다.
 
 ## 동작
 

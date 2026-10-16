@@ -7,23 +7,15 @@ subscription usage limit, then resumes it at the reset time.
 
 ## Install
 
-One line, no clone needed. Windows (PowerShell 5.1):
-
-```powershell
-irm https://raw.githubusercontent.com/yjacket/omo-limitless/master/install.ps1 | iex
-```
-
-Linux, macOS:
-
 ```sh
-curl -fsSL https://raw.githubusercontent.com/yjacket/omo-limitless/master/install.sh | sh
+omo install git:github.com/yjacket/omo-limitless
 ```
 
-The script downloads this repository's `master` branch and installs its `extension/` folder as `~/.omo/agent/extensions/omo-limitless/` (or under the folder named by `OMO_CODING_AGENT_DIR`). It builds the new folder beside the old one and swaps it in, so an update never mixes old and new files. Run from a clone (`.\install.ps1` or `sh install.sh`), it copies the local files instead. Then type `/reload` in running omo sessions.
+omo clones the repository into `~/.omo/agent/git/github.com/yjacket/omo-limitless` and adds it to `packages` in `~/.omo/agent/settings.json`. Type `/reload` in running sessions.
 
-On Windows use the PowerShell line: Git Bash's curl may fail with certificate error 60 because it does not read the Windows certificate store.
+**Update:** `omo update --extensions` (every installed package) or `omo update git:github.com/yjacket/omo-limitless`, then `/reload`.
 
-**Update:** run the same line again.
+If you installed with the old copy scripts, delete `~/.omo/agent/extensions/omo-limitless/`, or it loads next to the package.
 
 ## What it does
 
