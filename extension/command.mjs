@@ -1,22 +1,17 @@
-// limitless feature module: plan todo 9 "User override and /limitless command".
+// keepalive feature module: plan todo 9 "User override and /keepalive command".
 import { mkdirSync, readFileSync, renameSync, unlinkSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { readJson, sanitizeId } from "./state.mjs";
 import { hhmm, statusText } from "./core.mjs";
 import { overWindows } from "./policy.mjs";
+import { run as expiryCli } from "./keepwarm/cli/expiry.mjs";
+import { run as habitCli } from "./keepwarm/cli/habit.mjs";
+import { renderPanel } from "./panel.mjs";
 
-function formatStateKorean(parkState) {
-  const stateMap = {
-    "ok": "대기 없음",
-    "park-wait": "한도 대기(이 세션 유지)",
-    "park-exit": "한도 대기(종료 후 재실행)",
-  };
-  return stateMap[parkState] ?? parkState;
-}
-
+import { updateConfig } from "./keepwarm/config.mjs";
 export function install(core) {
   const fs = core.deps.fs ?? { mkdirSync, readFileSync, renameSync, unlinkSync, writeFileSync };
-  const controlPath = () => join(core.homeDir, ".omo", "limitless", "control", `${sanitizeId(core.sessionId)}.json`);
+  const controlPath = () => join(core.homeDir, ".omo", "keepalive", "control", `${sanitizeId(core.sessionId)}.json`);
 
   const writeControl = (mode) => {
     if (!core.sessionId) return;
@@ -49,41 +44,86 @@ export function install(core) {
     if (wasOff !== (mode === "off")) core.refreshStatus();
   });
 
-  const usage = "Usage: /limitless status|resume|park|off|on";
-  core.pi.registerCommand("limitless", {
+  const usage = "Usage: /keepalive [status|resume|park|off|on] · /keepalive set expiry <lane> <값|auto> · /keepalive set habit auto|--return-rate <p> --median <m> --t90 <t> · /keepalive set mode on|shadow|off · /keepalive set backstop on|off";
+  const env = core.deps.env ?? process.env;
+  const warmHome = () => env.OMO_KEEPWARM_HOME || join(core.homeDir, ".omo-keepwarm");
+  // Cache-warming settings: /keepalive set expiry|habit|mode|backstop ...
+  const SET_TARGETS = {
+    expiry: (args, io) => expiryCli(["set", ...args], io),
+    habit: (args, io) => habitCli(args[0] === "auto" ? ["auto"] : ["set", ...args], io),
+    mode: async ([value], io) => {
+      if (!["on", "shadow", "off"].includes(value)) {
+        io.stderr(usage);
+        return;
+      }
+      updateConfig(warmHome(), (c) => { c.mode = value; });
+      io.stdout(`keepalive: 캐시 데우기 ${value}`);
+    },
+    backstop: async ([value], io) => {
+      if (!["on", "off"].includes(value)) {
+        io.stderr(usage);
+        return;
+      }
+      updateConfig(warmHome(), (c) => { c.backstop = value; });
+      io.stdout(`keepalive: backstop 붙잡기 ${value}`);
+    },
+  };
+
+  async function runSet([target, ...args], ctx) {
+    if (!Object.hasOwn(SET_TARGETS, target) || args.length === 0) {
+      ctx.ui?.notify?.(usage, "info");
+      return;
+    }
+    let out = "";
+    let err = "";
+    const io = {
+      stdout: (text) => { out += text; },
+      stderr: (text) => { err += text; },
+      env: { ...env, OMO_KEEPWARM_HOME: warmHome() },
+      now: () => core.now(),
+      cwd: process.cwd(),
+    };
+    await SET_TARGETS[target](args, io);
+    ctx.ui?.notify?.(`${out}${err}`.trimEnd() || "keepalive: 바꿨습니다", err ? "warning" : "info");
+  }
+
+  function panelText() {
+    const now = core.now();
+    try {
+      return renderPanel({
+        state: core.state,
+        config: core.config,
+        home: warmHome(),
+        snapshot: core.keepwarm?.controller.snapshot(),
+        inert: core.keepwarm?.isInert?.() === true,
+        backstop: core.backstop?.status?.() ?? null,
+        now,
+        hhmm: (ms) => hhmm(ms, now),
+        statusText: statusText(core.state.resetAt, now),
+      });
+    } catch (error) {
+      core.recordError("panel", error);
+      return `keepalive: 화면을 만들지 못했습니다 (${error?.message ?? error})`;
+    }
+  }
+  core.pi.registerCommand("keepalive", {
     description: "Show or control usage-limit parking",
     handler: async (args, ctx) => {
       core.lastCtx = ctx;
-      const [action, ...extra] = String(args ?? "").trim().split(/\s+/);
+      const [first, ...extra] = String(args ?? "").trim().split(/\s+/);
+      // The bare command shows everything on one screen.
+      const action = first === "" ? "status" : first;
+      if (action === "set") {
+        await runSet(extra, ctx);
+        return;
+      }
       if (extra.length || !["status", "resume", "park", "off", "on"].includes(action)) {
         ctx.ui?.notify?.(usage, "info");
         return;
       }
 
       if (action === "status") {
-        const s = core.state;
-        const snapshot = s.snapshots?.at(-1);
-        const now = core.deps.now?.() ?? Date.now();
-        const windows = snapshot?.windows?.map((w) => {
-          let windowName = "unknown";
-          const kind = w.kind ?? w.window;
-          if (kind === "five_hour") {
-            windowName = "5시간";
-          } else if (kind === "seven_day") {
-            windowName = "7일";
-          } else if (w.name) {
-            windowName = w.name;
-          }
-          const utilization = w.utilization ?? w.used_percent;
-          return `${windowName} 창 ${utilization}%`;
-        }).join(", ") ?? "unavailable";
-        const statusLine = (s.parkState === "ok" ? null : statusText(s.resetAt, now)) ?? "⏸ 한도 대기 없음";
-        const stateKo = formatStateKorean(s.parkState);
-        const resetTimeKo = s.resetAt ? hhmm(s.resetAt, now) : "unknown";
-        const switchKo = s.mode === "off" ? "꺼짐" : "켜짐";
-        const source = snapshot?.source ?? "unknown";
-        const output = `${statusLine}\n상태: ${stateKo}\n사용량: ${windows}\n리셋: ${resetTimeKo}\n출처: ${source}\n스위치: ${switchKo}`;
-        ctx.ui?.notify?.(output, "info");
+        ctx.ui?.notify?.(panelText(), "info");
         return;
       }
 
@@ -97,7 +137,7 @@ export function install(core) {
       if (action === "park") {
         const decision = core.getPolicy();
         if (!decision || !["park-wait", "park-exit"].includes(decision.state)) {
-          ctx.ui?.notify?.("limitless: 지금은 사용량이 임계치 아래이거나 아직 판정이 없어 한도 대기를 걸지 않았습니다", "info");
+          ctx.ui?.notify?.("keepalive: 지금은 사용량이 임계치 아래이거나 아직 판정이 없어 한도 대기를 걸지 않았습니다", "info");
           return;
         }
         core.state.resumeHold = null; // a forced park wins over a resume hold

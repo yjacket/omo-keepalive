@@ -23,7 +23,7 @@ export function createHarness({
   let current = now;
   let isIdleNow = idle;
   let pendingMessages = false;
-  const tmpHome = homeDir ?? mkdtempSync(join(tmpdir(), "limitless-"));
+  const tmpHome = homeDir ?? mkdtempSync(join(tmpdir(), "keepalive-"));
   const dueTimers = () => [...timers.entries()].filter(([, timer]) => timer.at <= current).sort((a, b) => a[1].at - b[1].at);
   const clock = {
     now: () => current,
@@ -142,12 +142,12 @@ export function createHarness({
     pi, ctx, handlers, commands, statusLines, widgets, notifications, sentMessages, sentUserMessages,
     shutdownCalls, eventsEmitted, clock, tmpHome, goalStore, queuedTurns, selfLaunchCalls,
     fire,
-    // Text of the persistent limitless notice widget (undefined when cleared).
-    notice: () => widgets.get("limitless-notice")?.join("\n"),
+    // Text of the persistent keepalive notice widget (undefined when cleared).
+    notice: () => widgets.get("keepalive-notice")?.join("\n"),
     setIdle(value) { isIdleNow = value; },
     setPendingMessages(value) { pendingMessages = value; },
     setGoal(value) { goalStore.goal = value ? { ...value } : null; },
-    // Deps bundle for createCore/startLimitless: injected clock, timers, temp home, fake goal store.
+    // Deps bundle for createCore/startKeepalive: injected clock, timers, temp home, fake goal store.
     deps(extra = {}) {
       return {
         env, homeDir: tmpHome, now: clock.now, setTimeout: pi.setTimeout, clearTimeout: pi.clearTimeout,

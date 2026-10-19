@@ -4,7 +4,7 @@ import * as nodeFs from "node:fs";
 import { existsSync, readdirSync, readFileSync, writeFileSync, mkdirSync } from "node:fs";
 import { join } from "node:path";
 import { createHarness } from "./harness.mjs";
-import { startLimitless } from "../extension/limitless.mjs";
+import { startKeepalive } from "../extension/keepalive.mjs";
 import { ackName, CLAIM_FRESH_MS, parksDir, recordName, startName, RELAUNCH_REPARK_LIMIT } from "../extension/park-exit.mjs";
 import { resolveLauncher as realResolveLauncher, selfLaunch as realSelfLaunch } from "../extension/selflaunch.mjs";
 
@@ -36,7 +36,7 @@ function proc({ util = 95, now = T0, homeDir, env = ORCA, branch = PRIOR_TURN, g
   const goalAtShutdown = [];
   h.ctx.shutdown = () => { h.shutdownCalls.push(true); goalAtShutdown.push(h.goalStore.goal?.status ?? null); };
   const reader = async () => (usage ? usage() : snap(typeof util === "function" ? util() : util));
-  const core = startLimitless(h.pi, h.deps({ readUsage: reader, pid, isPidAlive: (p) => alive.has(p), selfLaunch,
+  const core = startKeepalive(h.pi, h.deps({ readUsage: reader, pid, isPidAlive: (p) => alive.has(p), selfLaunch,
     processStartTime: startOf, resolveLauncher: async () => ({ exe: "omo", args: [] }), parkExitStartGraceMs: 0, ...extra }));
   const dir = parksDir({}, h.tmpHome);
   const records = () => (existsSync(dir) ? readdirSync(dir).filter((f) => f.endsWith(".park.json")).sort() : []);
@@ -91,7 +91,7 @@ test("park-exit writes a D7 record with every key, pauses then re-activates the 
     assert.equal(rec.window, "five_hour");
     assert.equal(rec.resetAt, RESET);
     assert.equal(rec.reason, "usage-limit");
-    assert.deepEqual(rec.goal, { id: "g1", pausedByLimitless: true });
+    assert.deepEqual(rec.goal, { id: "g1", pausedByKeepalive: true });
     assert.equal(rec.status, "pending");
     assert.equal(rec.createdAt, T0);
     assert.equal(rec.claim, null);
@@ -99,7 +99,7 @@ test("park-exit writes a D7 record with every key, pauses then re-activates the 
     assert.deepEqual(p.h.goalStore.setStatusCalls, ["paused", "active"]);
     assert.deepEqual(p.goalAtShutdown, ["active"]);
     assert.equal(p.h.shutdownCalls.length, 1);
-    const state = p.h.readHomeJson(".omo/limitless/state/s1.json");
+    const state = p.h.readHomeJson(".omo/keepalive/state/s1.json");
     assert.equal(state.parkState, "exited");
     assert.equal(state.parkExit.parkId, `s1-${T0}`);
     // Nothing after shutdown: more boundaries and timers neither write nor shut down again.
@@ -107,19 +107,19 @@ test("park-exit writes a D7 record with every key, pauses then re-activates the 
     await p.h.clock.tick(3600000);
     assert.equal(p.h.shutdownCalls.length, 1);
     assert.equal(p.records().length, 1);
-    assert.equal(p.h.readHomeJson(".omo/limitless/state/s1.json").parkState, "exited");
+    assert.equal(p.h.readHomeJson(".omo/keepalive/state/s1.json").parkState, "exited");
   } finally { p.h.cleanup(); }
 });
 
 test("herdr terminal from HERDR_* env; qaCommandPrefix copied only when the env hook is set", async () => {
   const env = { HERDR_ENV: "1", HERDR_PANE_ID: "p-7", HERDR_WORKSPACE_ID: "w", HERDR_TAB_ID: "t",
-    OMO_LIMITLESS_QA_COMMAND_PREFIX: "set OMO_LIMITLESS_FAKE_USAGE_FILE=C:/tmp/u.json && " };
+    OMO_KEEPALIVE_QA_COMMAND_PREFIX: "set OMO_KEEPALIVE_FAKE_USAGE_FILE=C:/tmp/u.json && " };
   const p = proc({ env });
   try {
     await p.start();
     const rec = p.read(p.records()[0]);
     assert.deepEqual(rec.terminal, { kind: "herdr", herdr: { pane: "p-7", workspaceId: "w", tabId: "t" } });
-    assert.equal(rec.qaCommandPrefix, env.OMO_LIMITLESS_QA_COMMAND_PREFIX);
+    assert.equal(rec.qaCommandPrefix, env.OMO_KEEPALIVE_QA_COMMAND_PREFIX);
   } finally { p.h.cleanup(); }
 });
 
@@ -234,7 +234,7 @@ test("an unreadable wake count is unknown, not zero: any source holds until it r
   }
 });
 
-// N3: limitless loads before the terminal/ask-user/loop-guard/codemode emitters, so after a reload its wake map is empty
+// N3: keepalive loads before the terminal/ask-user/loop-guard/codemode emitters, so after a reload its wake map is empty
 // until they re-publish. No exit is attempted until the session settled once AND the grace passed.
 const GRACE = 5000;
 async function heldThenReload() {
@@ -252,7 +252,7 @@ test("N3: reload with a background session alive - no exit until settle + grace,
     await b.startOnly("reload");
     assert.equal(b.h.shutdownCalls.length, 0, "empty wake map at session_start must not exit");
     assert.equal(b.records().length, 0);
-    await b.wake(1, "terminal-background-sessions"); // the emitter re-publishes after limitless
+    await b.wake(1, "terminal-background-sessions"); // the emitter re-publishes after keepalive
     assert.equal(b.h.shutdownCalls.length, 0);
     await b.settle();
     await b.h.clock.tick(GRACE - 1);
@@ -534,7 +534,7 @@ for (const [label, opts] of [
       assert.equal(p.core.state.warm.on, false);
       assert.equal(p.core.canWarm(), false);
       assert.equal(p.h.goalStore.goal.status, "paused");
-      assert.equal(p.h.readHomeJson(".omo/limitless/state/s1.json").parkState, "park-wait");
+      assert.equal(p.h.readHomeJson(".omo/keepalive/state/s1.json").parkState, "park-wait");
     } finally { p.h.cleanup(); }
   });
 }
@@ -578,7 +578,7 @@ test("harness default: a park-exit decision in an unknown terminal goes to the h
       assert.notEqual(deps.resolveLauncher, realResolveLauncher);
     }
     h.writeHomeJson(".omo/agent/auth.json", { "anthropic-subscription": { access: "not-a-real-token" } });
-    const core = startLimitless(h.pi, h.deps({ readUsage: async () => snap(95), pid: 1001, isPidAlive: () => true,
+    const core = startKeepalive(h.pi, h.deps({ readUsage: async () => snap(95), pid: 1001, isPidAlive: () => true,
       processStartTime: startTime, parkExitStartGraceMs: 0 }));
     await h.fire("session_start", { type: "session_start", reason: "startup" });
     await h.fire("agent_settled", { type: "agent_settled" });
@@ -592,7 +592,7 @@ test("harness default: a park-exit decision in an unknown terminal goes to the h
 test("terminal.kind unknown with a registered self-launch -> record kind self + selfTask, shutdown", async () => {
   const calls = [];
   const selfLaunch = {
-    register: async (req) => { calls.push(req); return { ok: true, selfTask: "\\omo-limitless\\omo-limitless-resume-s1" }; },
+    register: async (req) => { calls.push(req); return { ok: true, selfTask: "\\omo-keepalive\\omo-keepalive-resume-s1" }; },
   };
   const p = proc({ env: {}, daemon: "none", selfLaunch });
   try {
@@ -600,7 +600,7 @@ test("terminal.kind unknown with a registered self-launch -> record kind self + 
     assert.deepEqual(calls, [{ sessionId: "s1", cwd: p.h.tmpHome, at: RESET + 60000, launcher: { exe: "omo", args: [] } }]);
     const rec = p.read(p.records()[0]);
     assert.deepEqual(rec.terminal, { kind: "self" });
-    assert.equal(rec.selfTask, "\\omo-limitless\\omo-limitless-resume-s1");
+    assert.equal(rec.selfTask, "\\omo-keepalive\\omo-keepalive-resume-s1");
     assert.equal(p.h.shutdownCalls.length, 1);
   } finally { p.h.cleanup(); }
 });
@@ -608,7 +608,7 @@ test("terminal.kind unknown with a registered self-launch -> record kind self + 
 test("park record stores the resolved launcher and hands it to the self-launch registration", async () => {
   const launcher = { exe: "C:\\Users\\u\\.bun\\bin\\bun.exe", args: ["C:\\Users\\u\\omo.js"] };
   const calls = [];
-  const selfLaunch = { register: async (req) => { calls.push(req); return { ok: true, selfTask: "\\omo-limitless\\omo-limitless-resume-s1" }; } };
+  const selfLaunch = { register: async (req) => { calls.push(req); return { ok: true, selfTask: "\\omo-keepalive\\omo-keepalive-resume-s1" }; } };
   const p = proc({ env: {}, daemon: "none", selfLaunch, extra: { resolveLauncher: async () => launcher } });
   try {
     await p.start();
@@ -618,7 +618,7 @@ test("park record stores the resolved launcher and hands it to the self-launch r
 });
 
 test("an invalid launcher reported by the registration is recorded as lastError {where:'launcher'}", async () => {
-  const selfLaunch = { register: async () => ({ ok: true, selfTask: "\\omo-limitless\\omo-limitless-resume-s1", launcherWarning: "invalid launcher, fell back to bare omo" }) };
+  const selfLaunch = { register: async () => ({ ok: true, selfTask: "\\omo-keepalive\\omo-keepalive-resume-s1", launcherWarning: "invalid launcher, fell back to bare omo" }) };
   const p = proc({ env: {}, daemon: "none", selfLaunch });
   try {
     await p.start();
@@ -663,16 +663,16 @@ test("relaunch: session_start with parkState exited writes the ack and resumes t
     assert.deepEqual(second.h.goalStore.setStatusCalls, []);
     assert.equal(second.h.shutdownCalls.length, 0);
     assert.equal(second.core.state.parkState, "ok");
-    assert.equal(second.read(name).status, "claimed"); // limitless never touches the record after writing it
+    assert.equal(second.read(name).status, "claimed"); // keepalive never touches the record after writing it
     assert.ok(existsSync(join(first.dir, startName("s1", `s1-${T0}`))));
     assert.equal(second.records().length, 1);
     // The relaunch is finished: parkId is cleared, the held claim is named, and a clean shutdown drops both.
-    const parkExit = second.h.readHomeJson(".omo/limitless/state/s1.json").parkExit;
+    const parkExit = second.h.readHomeJson(".omo/keepalive/state/s1.json").parkExit;
     assert.equal(parkExit.parkId, null);
     assert.equal(parkExit.claimFile, startName("s1", `s1-${T0}`));
     await second.h.fire("session_shutdown", { type: "session_shutdown" });
     assert.equal(existsSync(join(first.dir, startName("s1", `s1-${T0}`))), false);
-    assert.equal(second.h.readHomeJson(".omo/limitless/state/s1.json").parkExit.claimFile, null);
+    assert.equal(second.h.readHomeJson(".omo/keepalive/state/s1.json").parkExit.claimFile, null);
     // A later open runs no claim check at all: even a live pid 1002 with any start time cannot veto it.
     const reopen = proc({ homeDir: first.h.tmpHome, now: RESET + 3600000, util: 10, pid: 1003,
       alive: new Set([1002, 1003]), goal: second.h.goalStore.goal });
@@ -683,7 +683,7 @@ test("relaunch: session_start with parkState exited writes the ack and resumes t
 });
 
 test("relaunch of a kind self record unregisters the self-launch task exactly once with its own task name", async () => {
-  const task = "\\omo-limitless\\omo-limitless-resume-s1";
+  const task = "\\omo-keepalive\\omo-keepalive-resume-s1";
   const first = proc({ env: {}, daemon: "none", selfLaunch: { register: async () => ({ ok: true, selfTask: task }), unregister: async () => ({ ok: true }) } });
   try {
     await first.start();
@@ -706,7 +706,7 @@ test("relaunch with a cap-suppressed goal sends one kick message", async () => {
     const second = proc({ homeDir: first.h.tmpHome, now: RESET + 120000, util: 10, pid: 1002,
       goal: first.h.goalStore.goal, branch: [...PRIOR_TURN, ...flood] });
     await second.start();
-    assert.deepEqual(second.h.sentUserMessages.map((m) => m.text), ["[limitless] 사용량 한도가 리셋됐다. 중단 전 작업을 이어가라."]);
+    assert.deepEqual(second.h.sentUserMessages.map((m) => m.text), ["[keepalive] 사용량 한도가 리셋됐다. 중단 전 작업을 이어가라."]);
     const third = proc({ homeDir: first.h.tmpHome, now: RESET + 120000, util: 10, pid: 1003, alive: new Set(),
       goal: first.h.goalStore.goal, branch: [...PRIOR_TURN, ...flood.slice(1)] });
     await third.start();
@@ -721,7 +721,7 @@ test("two instances for the same sid and parkId (sequential): the first claims a
     // One goal store shared by both processes; B sees usage over the limit, so any core work in B would
     // persist the state file, park and pause the goal.
     const shared = first.h.goalStore;
-    const stateFile = join(first.h.tmpHome, ".omo/limitless/state/s1.json");
+    const stateFile = join(first.h.tmpHome, ".omo/keepalive/state/s1.json");
     const opts = { homeDir: first.h.tmpHome, now: RESET + 120000, extra: { goalStore: shared } };
     const a = proc({ ...opts, util: 10, pid: 1001 });
     const b = proc({ ...opts, util: 95, pid: 1002 });
@@ -751,7 +751,7 @@ test("duplicate start while the relaunched session runs and usage rose: vetoed b
   const first = await exitOnce();
   try {
     const shared = first.h.goalStore;
-    const stateFile = join(first.h.tmpHome, ".omo/limitless/state/s1.json");
+    const stateFile = join(first.h.tmpHome, ".omo/keepalive/state/s1.json");
     let u = 10;
     const usage = () => snap(u, RESET + 5 * 3600000);
     const a = proc({ homeDir: first.h.tmpHome, now: RESET + 120000, pid: 1002, usage, extra: { goalStore: shared } });
@@ -768,7 +768,7 @@ test("duplicate start while the relaunched session runs and usage rose: vetoed b
     assert.equal(shared.goal.status, "active", "duplicate paused the live session's goal");
     // A parks at its next boundary (it owns the pause), then usage resets -> goal active again.
     await a.h.clock.tick(5 * 60000); await a.h.runTurn();
-    assert.equal(a.core.state.pausedByLimitless, "g1");
+    assert.equal(a.core.state.pausedByKeepalive, "g1");
     u = 10; await a.h.clock.tick(4 * 3600000); await a.h.runTurn(); await a.h.clock.tick(0);
     assert.equal(a.core.isParked(), false);
     assert.equal(shared.goal.status, "active", "goal stranded paused after reset");
@@ -809,7 +809,7 @@ async function crashedRelaunch() {
   const first = await exitOnce();
   const relaunched = proc({ homeDir: first.h.tmpHome, now: RESET + 120000, util: 10, pid: 1002, goal: first.h.goalStore.goal });
   await relaunched.start(); // acks, holds the claim; then "crashes" without session_shutdown
-  assert.equal(relaunched.h.readHomeJson(".omo/limitless/state/s1.json").parkExit.claimFile, startName("s1", `s1-${T0}`));
+  assert.equal(relaunched.h.readHomeJson(".omo/keepalive/state/s1.json").parkExit.claimFile, startName("s1", `s1-${T0}`));
   return { first, relaunched, claim: join(first.dir, startName("s1", `s1-${T0}`)) };
 }
 
@@ -822,7 +822,7 @@ test("N1: a crashed relaunch's claim whose pid was reused (start time differs) i
     assert.equal(reopen.h.shutdownCalls.length, 0);
     assert.equal(reopen.core.isVetoed(), false);
     assert.equal(existsSync(claim), false, "stale claim removed");
-    const parkExit = reopen.h.readHomeJson(".omo/limitless/state/s1.json").parkExit;
+    const parkExit = reopen.h.readHomeJson(".omo/keepalive/state/s1.json").parkExit;
     assert.equal(parkExit.claimFile, null);
     assert.equal(parkExit.parkId, null);
   } finally { first.h.cleanup(); }
@@ -867,7 +867,7 @@ test("N6: a failed ack write is recorded in state.lastError {where:'write', path
       goal: first.h.goalStore.goal, extra: { fs: failing } });
     await second.start();
     assert.equal(existsSync(ackPath), false);
-    const lastError = second.h.readHomeJson(".omo/limitless/state/s1.json").lastError;
+    const lastError = second.h.readHomeJson(".omo/keepalive/state/s1.json").lastError;
     assert.equal(lastError?.where, "write");
     assert.equal(lastError?.path, ackPath);
   } finally { first.h.cleanup(); }
@@ -889,7 +889,7 @@ test("interleaving: ack A, re-park as B and exit, late health write marks A laun
     const bBefore = readFileSync(join(first.dir, nameB), "utf8");
     assert.equal(JSON.parse(bBefore).status, "pending");
     assert.equal(JSON.parse(bBefore).parkId, `s1-${t1}`);
-    assert.equal(second.h.readHomeJson(".omo/limitless/state/s1.json").parkExit.parkId, `s1-${t1}`);
+    assert.equal(second.h.readHomeJson(".omo/keepalive/state/s1.json").parkExit.parkId, `s1-${t1}`);
     healthWrite(first.dir, nameA, { status: "launched" }); // the late health write
     healthTick(first.dir);
     assert.equal(readFileSync(join(first.dir, nameB), "utf8"), bBefore);
@@ -909,7 +909,7 @@ test(`after ${RELAUNCH_REPARK_LIMIT} consecutive re-parks right after relaunch, 
       const p = proc({ homeDir: first.h.tmpHome, now: t, pid: 2000 + i, alive: new Set(), goal, usage: () => snap(95, resetAt) });
       await p.start();
       assert.equal(p.h.shutdownCalls.length, 1, `relaunch ${i} re-parks and exits`);
-      assert.equal(p.h.readHomeJson(".omo/limitless/state/s1.json").parkExit.relaunchReparks, i);
+      assert.equal(p.h.readHomeJson(".omo/keepalive/state/s1.json").parkExit.relaunchReparks, i);
       goal = p.h.goalStore.goal;
       t += 6 * 3600000;
     }
@@ -920,11 +920,11 @@ test(`after ${RELAUNCH_REPARK_LIMIT} consecutive re-parks right after relaunch, 
     assert.equal(last.core.isParked(), false);
     assert.equal(last.core.enabled(), false);
     assert.equal(last.h.goalStore.goal.status, "active");
-    assert.equal(last.h.notifications.filter((n) => n.text.startsWith("limitless: 재실행 직후")).length, 1);
-    assert.deepEqual(last.h.readHomeJson(".omo/limitless/control/s1.json"), { v: 1, mode: "off" });
+    assert.equal(last.h.notifications.filter((n) => n.text.startsWith("keepalive: 재실행 직후")).length, 1);
+    assert.deepEqual(last.h.readHomeJson(".omo/keepalive/control/s1.json"), { v: 1, mode: "off" });
     await last.h.runTurn({ tools: ["task"] });
     assert.equal(last.h.shutdownCalls.length, 0);
-    assert.equal(last.h.notifications.filter((n) => n.text.startsWith("limitless: 재실행 직후")).length, 1);
+    assert.equal(last.h.notifications.filter((n) => n.text.startsWith("keepalive: 재실행 직후")).length, 1);
   } finally { first.h.cleanup(); }
 });
 

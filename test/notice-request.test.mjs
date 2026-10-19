@@ -1,5 +1,5 @@
 // The park / goal-held notices live in a TUI widget (ctx.ui.setWidget), never in the conversation. senpi's default
-// compaction builtin converts EVERY custom message to a role:user message before limitless's own context handler could
+// compaction builtin converts EVERY custom message to a role:user message before keepalive's own context handler could
 // match it, so the only safe notice is one that is never a message. This test builds the model request the way senpi
 // does: session messages -> the REAL ExtensionRunner.emitContext with the REAL compaction builtin handler.
 import test from "node:test";
@@ -8,7 +8,7 @@ import { existsSync } from "node:fs";
 import { join } from "node:path";
 import { pathToFileURL } from "node:url";
 import { createHarness } from "./harness.mjs";
-import { startLimitless } from "../extension/limitless.mjs";
+import { startKeepalive } from "../extension/keepalive.mjs";
 import { hhmm, senpiDistCandidates } from "../extension/core.mjs";
 
 const T0 = Date.UTC(2026, 9, 7, 3, 0, 0);
@@ -36,17 +36,17 @@ async function realRunner() {
   return runner;
 }
 
-// What the session holds: the user's prompt plus every message limitless posted through pi.sendMessage.
+// What the session holds: the user's prompt plus every message keepalive posted through pi.sendMessage.
 const request = async (runner, h) => JSON.stringify(await runner.emitContext([
   { role: "user", content: "hi", timestamp: 1 },
   ...h.sentMessages.map(({ msg }, i) => ({ role: "custom", customType: msg.customType, content: msg.content, display: msg.display, timestamp: 2 + i })),
 ]));
 
-test("no limitless notice text reaches the request at park start, goal held, or after release", { skip }, async () => {
+test("no keepalive notice text reaches the request at park start, goal held, or after release", { skip }, async () => {
   const runner = await realRunner();
   const h = createHarness({ now: T0, goal: null });
   try {
-    const core = startLimitless(h.pi, h.deps());
+    const core = startKeepalive(h.pi, h.deps());
     await h.fire("session_start", { type: "session_start", reason: "startup" });
     h.setGoal(GOAL);
     await core.park({ state: "park-wait", window: "five_hour", resetAt: RESET, reason: "5h 95%" });
@@ -71,7 +71,7 @@ test("no-goal park notice is widget-only: never a message, never in the request"
   const runner = await realRunner();
   const h = createHarness({ now: T0, goal: null });
   try {
-    const core = startLimitless(h.pi, h.deps());
+    const core = startKeepalive(h.pi, h.deps());
     await h.fire("session_start", { type: "session_start", reason: "startup" });
     await core.park({ state: "park-wait", window: "five_hour", resetAt: RESET, reason: "5h 95%" });
     assert.equal(h.notice(), `⏸ 사용량 한도 대기 (five_hour 95%) · ${hhmm(RESET)} 재개. goal이 없어 작업은 그대로 할 수 있습니다.`);
@@ -93,7 +93,7 @@ test("sanity: the real compaction handler does convert a posted custom message i
 test("a session shutdown clears the notice widget", async () => {
   const h = createHarness({ now: T0, goal: GOAL });
   try {
-    const core = startLimitless(h.pi, h.deps());
+    const core = startKeepalive(h.pi, h.deps());
     await h.fire("session_start", { type: "session_start", reason: "startup" });
     await core.park({ state: "park-wait", window: "five_hour", resetAt: RESET, reason: "5h 95%" });
     assert.ok(h.notice());

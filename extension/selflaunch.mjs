@@ -1,12 +1,12 @@
-// limitless feature module: plan todo 14 "self-launch fallback when the session runs outside Orca and herdr".
+// keepalive feature module: plan todo 14 "self-launch fallback when the session runs outside Orca and herdr".
 //
 // Before park-exit shuts a session down in an unknown terminal, register ONE one-shot Windows scheduled task
-// (\omo-limitless\omo-limitless-resume-<sid8>, trigger = reset + grace, default interactive non-elevated
+// (\omo-keepalive\omo-keepalive-resume-<sid8>, trigger = reset + grace, default interactive non-elevated
 // principal, StartWhenAvailable, -Force so a leftover task of an earlier episode is replaced) that opens
 // Windows Terminal (wt.exe if found, else cmd.exe) running `omo --session <sid>`.
 //
 // Injection safety: the PowerShell scripts below are STATIC text. Session id, cwd, executable and trigger time
-// reach PowerShell only through process environment variables (OMO_LL_*), never through the command text, and
+// reach PowerShell only through process environment variables (OMO_KA_*), never through the command text, and
 // the task action argument is assembled from a PowerShell array. sid is allow-listed (omo-health terminal.mjs
 // regex), cwd must be an absolute existing directory without `"`, `%` or control characters (the characters that
 // can break out of the quoted action argument or be expanded by cmd.exe).
@@ -20,12 +20,12 @@ import { spawn } from "node:child_process";
 import * as nodeFs from "node:fs";
 import { basename, delimiter, isAbsolute, join, normalize } from "node:path";
 
-export const TASK_PATH = "\\omo-limitless\\";
+export const TASK_PATH = "\\omo-keepalive\\";
 export const SID_RE = /^[A-Za-z0-9][A-Za-z0-9-]{7,79}$/; // omo-health/src/act/terminal.mjs:24
 export const POWERSHELL_TIMEOUT_MS = 30_000;
 const MIN_LEAD_MS = 20_000;
 
-export const taskName = (sessionId) => `omo-limitless-resume-${sessionId.slice(0, 8)}`;
+export const taskName = (sessionId) => `omo-keepalive-resume-${sessionId.slice(0, 8)}`;
 export const selfTaskOf = (sessionId) => `${TASK_PATH}${taskName(sessionId)}`;
 
 const pad = (n) => String(n).padStart(2, "0");
@@ -38,28 +38,28 @@ export function isoLocal(ms) {
 export const REGISTER_SCRIPT = [
   "$ErrorActionPreference = 'Stop'",
   "$q = [string][char]34",
-  "$name = $env:OMO_LL_TASK",
-  "$at = [datetime]::ParseExact($env:OMO_LL_AT, 'yyyy-MM-ddTHH:mm:ss', [cultureinfo]::InvariantCulture)",
-  "$l = @($env:OMO_LL_LAUNCH.Split([char]10) | ForEach-Object { $q + $_ + $q })",
-  "if ($env:OMO_LL_KIND -eq 'wt') { $argv = @('-d', ($q + $env:OMO_LL_CWD + $q)) + $l + @('--session', $env:OMO_LL_SID) }",
-  "else { $argv = @('/c', 'start', ($q + 'limitless' + $q), '/D', ($q + $env:OMO_LL_CWD + $q)) + $l + @('--session', $env:OMO_LL_SID) }",
+  "$name = $env:OMO_KA_TASK",
+  "$at = [datetime]::ParseExact($env:OMO_KA_AT, 'yyyy-MM-ddTHH:mm:ss', [cultureinfo]::InvariantCulture)",
+  "$l = @($env:OMO_KA_LAUNCH.Split([char]10) | ForEach-Object { $q + $_ + $q })",
+  "if ($env:OMO_KA_KIND -eq 'wt') { $argv = @('-d', ($q + $env:OMO_KA_CWD + $q)) + $l + @('--session', $env:OMO_KA_SID) }",
+  "else { $argv = @('/c', 'start', ($q + 'keepalive' + $q), '/D', ($q + $env:OMO_KA_CWD + $q)) + $l + @('--session', $env:OMO_KA_SID) }",
   "$trigger = New-ScheduledTaskTrigger -Once -At $at",
-  "$action = New-ScheduledTaskAction -Execute $env:OMO_LL_EXE -Argument ($argv -join ' ')",
+  "$action = New-ScheduledTaskAction -Execute $env:OMO_KA_EXE -Argument ($argv -join ' ')",
   "$settings = New-ScheduledTaskSettingsSet -StartWhenAvailable",
-  "Register-ScheduledTask -TaskName $name -TaskPath '\\omo-limitless\\' -Trigger $trigger -Action $action -Settings $settings -Force | Out-Null",
-  "$t = Get-ScheduledTask -TaskName $name -TaskPath '\\omo-limitless\\'",
-  "Write-Output ('LIMITLESS-REGISTERED ' + $t.TaskPath + $t.TaskName)",
+  "Register-ScheduledTask -TaskName $name -TaskPath '\\omo-keepalive\\' -Trigger $trigger -Action $action -Settings $settings -Force | Out-Null",
+  "$t = Get-ScheduledTask -TaskName $name -TaskPath '\\omo-keepalive\\'",
+  "Write-Output ('KEEPALIVE-REGISTERED ' + $t.TaskPath + $t.TaskName)",
 ].join("\n");
 
 export const UNREGISTER_SCRIPT = [
   "$ErrorActionPreference = 'Stop'",
-  "$name = $env:OMO_LL_TASK",
-  "$t = Get-ScheduledTask -TaskName $name -TaskPath '\\omo-limitless\\' -ErrorAction SilentlyContinue",
-  "if ($null -eq $t) { Write-Output 'LIMITLESS-GONE'; exit 0 }",
-  "Unregister-ScheduledTask -TaskName $name -TaskPath '\\omo-limitless\\' -Confirm:$false",
-  "$still = Get-ScheduledTask -TaskName $name -TaskPath '\\omo-limitless\\' -ErrorAction SilentlyContinue",
-  "if ($null -ne $still) { Write-Output 'LIMITLESS-STILL-PRESENT'; exit 3 }",
-  "Write-Output 'LIMITLESS-UNREGISTERED'",
+  "$name = $env:OMO_KA_TASK",
+  "$t = Get-ScheduledTask -TaskName $name -TaskPath '\\omo-keepalive\\' -ErrorAction SilentlyContinue",
+  "if ($null -eq $t) { Write-Output 'KEEPALIVE-GONE'; exit 0 }",
+  "Unregister-ScheduledTask -TaskName $name -TaskPath '\\omo-keepalive\\' -Confirm:$false",
+  "$still = Get-ScheduledTask -TaskName $name -TaskPath '\\omo-keepalive\\' -ErrorAction SilentlyContinue",
+  "if ($null -ne $still) { Write-Output 'KEEPALIVE-STILL-PRESENT'; exit 3 }",
+  "Write-Output 'KEEPALIVE-UNREGISTERED'",
 ].join("\n");
 
 // Real runner: static script via -EncodedCommand, values via env, hard timeout that kills the process tree.
@@ -114,7 +114,7 @@ export const ANCESTOR_SCRIPT = [
   "$ProgressPreference = 'SilentlyContinue'",
   "$byId = @{}",
   "Get-CimInstance Win32_Process -Property ProcessId, ParentProcessId, ExecutablePath | ForEach-Object { $byId[[int]$_.ProcessId] = $_ }",
-  "$p = [int]$env:OMO_LL_PID",
+  "$p = [int]$env:OMO_KA_PID",
   "for ($i = 0; $i -lt 8; $i++) {",
   "  $c = $byId[$p]",
   "  if (-not $c) { break }",
@@ -126,7 +126,7 @@ export const ANCESTOR_SCRIPT = [
 ].join("\n");
 
 export async function probeAncestors({ pid = process.pid, env = process.env, timeoutMs = 15_000 } = {}) {
-  const result = await powershellRunner({ timeoutMs, env })({ script: ANCESTOR_SCRIPT, env: { OMO_LL_PID: String(pid) } });
+  const result = await powershellRunner({ timeoutMs, env })({ script: ANCESTOR_SCRIPT, env: { OMO_KA_PID: String(pid) } });
   if (result?.code !== 0 || result.timedOut) return [];
   return String(result.stdout).split(/\r?\n/).map((l) => l.trim()).filter(Boolean);
 }
@@ -206,14 +206,14 @@ export function createSelfLaunch(deps = {}) {
     const result = await run({
       script: REGISTER_SCRIPT,
       env: {
-        OMO_LL_TASK: taskName(sid), OMO_LL_SID: sid, OMO_LL_CWD: dir, OMO_LL_EXE: exe, OMO_LL_KIND: kind,
-        OMO_LL_LAUNCH: [launch.exe, ...launch.args].join("\n"),
-        OMO_LL_AT: isoLocal(Math.max(at, now() + MIN_LEAD_MS)),
+        OMO_KA_TASK: taskName(sid), OMO_KA_SID: sid, OMO_KA_CWD: dir, OMO_KA_EXE: exe, OMO_KA_KIND: kind,
+        OMO_KA_LAUNCH: [launch.exe, ...launch.args].join("\n"),
+        OMO_KA_AT: isoLocal(Math.max(at, now() + MIN_LEAD_MS)),
       },
     });
     if (result?.timedOut) return { ok: false, reason: "powershell-timeout", ...warn };
     if (result?.code !== 0) return { ok: false, reason: `powershell-exit-${result?.code ?? "none"}: ${lastLine(result?.stderr).slice(0, 200)}`, ...warn };
-    if (lastLine(result.stdout) !== `LIMITLESS-REGISTERED ${selfTask}`) return { ok: false, reason: "registration-not-confirmed", ...warn };
+    if (lastLine(result.stdout) !== `KEEPALIVE-REGISTERED ${selfTask}`) return { ok: false, reason: "registration-not-confirmed", ...warn };
     return { ok: true, selfTask, ...warn };
   }
 
@@ -221,10 +221,10 @@ export function createSelfLaunch(deps = {}) {
     const sid = validateSid(sessionId);
     if (selfTask !== selfTaskOf(sid)) throw new Error("self-launch: selfTask does not belong to this session");
     if (platform !== "win32") return { ok: false, reason: "not-windows" };
-    const result = await run({ script: UNREGISTER_SCRIPT, env: { OMO_LL_TASK: taskName(sid) } });
+    const result = await run({ script: UNREGISTER_SCRIPT, env: { OMO_KA_TASK: taskName(sid) } });
     if (result?.timedOut) return { ok: false, reason: "powershell-timeout" };
     const line = lastLine(result?.stdout);
-    if (result?.code === 0 && (line === "LIMITLESS-UNREGISTERED" || line === "LIMITLESS-GONE")) return { ok: true, gone: line === "LIMITLESS-GONE" };
+    if (result?.code === 0 && (line === "KEEPALIVE-UNREGISTERED" || line === "KEEPALIVE-GONE")) return { ok: true, gone: line === "KEEPALIVE-GONE" };
     return { ok: false, reason: `unregister-failed: ${lastLine(result?.stderr).slice(0, 200) || line}` };
   }
 

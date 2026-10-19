@@ -1,6 +1,6 @@
-// limitless core (plan todo 5): park gate + the shared API every Wave-2 feature module plugs into.
+// keepalive core (plan todo 5): park gate + the shared API every Wave-2 feature module plugs into.
 //
-// limitless.mjs creates the core, wires senpi events to the core's `handle*` methods, then calls
+// keepalive.mjs creates the core, wires senpi events to the core's `handle*` methods, then calls
 // `install(core)` of each feature module in a fixed order (events, command, resume, warm, park-exit,
 // reactive). Core handlers are registered BEFORE feature handlers, so on every event the core runs first.
 //
@@ -14,12 +14,14 @@
 //     armed, source ("poll"|"manual"|"reactive"|...), window, util, resetAt, reason, warm {on,intervalMs,...}
 //     decision (last policy result incl. state "unknown" when usage was unavailable), snapshots, lastPollAt
 //     episode (counter), parkedAt, episodeNotified, latecomer, hadPriorTurns
-//     pausedByLimitless (goal id limitless paused, or null), blocked (count), mode ("on"|"off")
+//     pausedByKeepalive (goal id paused by keepalive, or null), blocked (count), mode ("on"|"off")
 //     lastError {at, where, message}, lastRelease {at, reason}
 //     Features keep their own data under a key named after the feature (state.warm is the policy's warm).
+// core.keepwarm                            {controller, isInert}, set by warm.mjs (keepwarm runtime handle, unset until install)
+// core.backstop                           {status() -> {holding, tripped}}, set by backstop.mjs (unset until install): holds senpi's goal backstop while goal-wait warming is live
 // core.startState                            frozen copy of the state file as loaded at session_start, or null
 //                                            (todo 8 reads parkState:"exited" here; the core never writes it)
-// core.persist()                             write state to <home>/.omo/limitless/state/<sid>.json (temp+rename);
+// core.persist()                             write state to <home>/.omo/keepalive/state/<sid>.json (temp+rename);
 //                                            a failed write sets state.lastError {at, where:"write", path, message}
 // core.getPolicy()                           last decision (same as core.state.decision)
 // core.poll({force})                         usage + policy; throttled to pollMinIntervalMs unless force.
@@ -35,7 +37,7 @@
 //                                              ok         -> release() + releaseOwnedGoal({text: texts.resetResume})
 //                                              unknown (usage source none, reader threw, no lane) -> same as ok
 //                                            It sends NO message of its own: work restarts only through
-//                                            releaseOwnedGoal when limitless un-paused the goal it owns. No owned
+//                                            releaseOwnedGoal when keepalive un-paused the goal it owns. No owned
 //                                            goal (no goal, or a user-paused goal) -> park and status cleared, zero
 //                                            messages, zero emits. Returns the decision (no-op when not parked).
 // core.readUsage(provider, account)          production usage reader (usage.mjs, or deps.readUsage) behind the shared
@@ -53,10 +55,10 @@
 // core.isParked(), core.isLatecomer()        flags; core.canWarm() / core.canParkExit() are the gates todo 6 /
 //                                            todo 8 must check (both false for a latecomer)
 // core.enabled()                             config.enabled && state.mode !== "off" (todo 9 sets state.mode)
-// core.ownedGoalId()                         state.pausedByLimitless
-// core.pauseActiveGoal({notice})             pause the goal only when it is active; records pausedByLimitless;
+// core.ownedGoalId()                         state.pausedByKeepalive
+// core.pauseActiveGoal({notice})             pause the goal only when it is active; records pausedByKeepalive;
 //                                            returns the goal id or null. notice=true posts the "goal은 HH:MM ..." notice (announceGoalHeld).
-// core.releaseOwnedGoal({reason})            un-pause only if the goal is paused and its id === pausedByLimitless,
+// core.releaseOwnedGoal({reason})            un-pause only if the goal is paused and its id === pausedByKeepalive,
 //                                            then restart work exactly once: idle -> pi.events.emit(
 //                                            "goal_store_changed", {threadId}); busy -> remember it and emit at
 //                                            agent_settled unless a run starts first (the goal extension continues by itself). Returns true when it un-paused. When it
@@ -96,13 +98,13 @@
 //                                            messages of a typed prompt, agent-session.js:3770-3790). Cleared by a
 //                                            user-role message_start (which also marks the run user-started), the final
 //                                            agent_end (willRetry keeps it), agent_settled and session reset. Every
-//                                            tool_call is blocked only while parked AND limitless holds the goal
+//                                            tool_call is blocked only while parked AND keepalive holds the goal
 //                                            paused; a user run blocks only task/task_create.
 // core.setControlReader(fn(ctx, kind))       control-file hook (todo 9): awaited at the start of every boundary
 //                                            and timer tick; it may change state.mode or call release()
 // core.now(), core.hhmm(ms)                  injected clock; HH:MM today, M/D HH:MM on another local day
 // core.setStatus(text|undefined), core.notify(text, level), core.recordError(where, err)
-// core.blockReason()                         "limitless: usage limit <window> <util>% - resumes <HH:MM>"
+// core.blockReason()                         "keepalive: usage limit <window> <util>% - resumes <HH:MM>"
 // core.texts                                 {resetResume, raceNote, goalHeld(hhmm)}
 //
 // deps: {env, homeDir, fs (sync node:fs subset), now, setTimeout, clearTimeout, readUsage, goalStore}
@@ -116,28 +118,28 @@ import { readAuthJson, resolveLane } from "./lane.mjs";
 import { readUsage as defaultReadUsage } from "./usage.mjs";
 import { loadState, readSharedSnapshot, saveState, statePath, writeSharedSnapshot } from "./state.mjs";
 
-export const STATUS_KEY = "limitless";
-// Shown in the status slot while limitless is on and not parked, so the user can see it is watching. A natively
+export const STATUS_KEY = "omo-keepalive";
+// Shown in the status slot while keepalive is on and not parked, so the user can see it is watching. A natively
 // wide emoji: the terminal reserves the two cells it draws (a narrow one like ♾️ overflows its single cell).
 export const IDLE_STATUS = "🔄";
 export const SPAWN_TOOLS = new Set(["task", "task_create"]);
-export const NOTICE_WIDGET_KEY = "limitless-notice";
+export const NOTICE_WIDGET_KEY = "keepalive-notice";
 export const GOAL_CONTINUATION_PREFIX = "Continue working toward the active thread goal.";
 const SUBSCRIPTION = new Set(["anthropic-subscription", "chatgpt-subscription"]);
 const PARKED = new Set(["park-wait", "park-exit"]);
 const MAX_TIMER_MS = 2147483647;
 
 export const TEXTS = {
-  resetResume: "[limitless] 사용량 한도가 리셋됐다. 중단 전 작업을 이어가라.",
+  resetResume: "[keepalive] 사용량 한도가 리셋됐다. 중단 전 작업을 이어가라.",
   raceNote: "사용량 한도 대기 중. 도구를 쓰지 말고 한 줄로 끝내라",
   goalHeld: (hhmm) => hhmm === null
-    ? "goal은 리셋 시각을 아직 몰라 한도가 풀리면 시작합니다. 지금 돌리려면 /limitless resume"
-    : `goal은 ${hhmm} 리셋 뒤 시작합니다. 지금 돌리려면 /limitless resume`,
+    ? "goal은 리셋 시각을 아직 몰라 한도가 풀리면 시작합니다. 지금 돌리려면 /keepalive resume"
+    : `goal은 ${hhmm} 리셋 뒤 시작합니다. 지금 돌리려면 /keepalive resume`,
 };
 
 const knownTime = (ms) => typeof ms === "number" && Number.isFinite(ms);
 
-// THE reset-time formatter (status bar, notices, /limitless status). Shows HH:MM today, prefixed with M/D when `now` is
+// THE reset-time formatter (status bar, notices, /keepalive status). Shows HH:MM today, prefixed with M/D when `now` is
 // given and the reset falls on another local day; "--:--" for an unknown time (null/NaN must never render as a
 // clock, new Date(null) is 1970).
 export function hhmm(ms, now) {
@@ -149,8 +151,8 @@ export function hhmm(ms, now) {
 }
 
 export const statusText = (resetAt, now) => knownTime(resetAt) ? `⏸ 한도 대기 · ${hhmm(resetAt, now)} 재개` : "⏸ 한도 대기 · 재개 시각 미정";
-// THE park notice formatter (persistent widget). goalOwned=true when limitless paused a goal for this park; false
-// for a session whose goal was not paused by limitless (no goal, or a user-paused one), which stays free to work.
+// THE park notice formatter (persistent widget). goalOwned=true when keepalive paused a goal for this park; false
+// for a session whose goal was not paused by keepalive (no goal, or a user-paused one), which stays free to work.
 const parkNoticeText = (state, now, goalOwned = true) => {
   const when = knownTime(state.resetAt) ? `${hhmm(state.resetAt, now)} 재개.` : "리셋 시각을 아직 몰라 재개 시각 미정.";
   const tail = goalOwned ? "goal을 멈췄고 새 서브에이전트는 막힙니다." : "goal이 없어 작업은 그대로 할 수 있습니다.";
@@ -160,9 +162,26 @@ const parkNoticeText = (state, now, goalOwned = true) => {
 const freshState = () => ({
   v: 1, parkState: "ok", armed: false, source: null, window: null, util: null, resetAt: null, reason: null,
   warm: null, decision: null, snapshots: [], lastPollAt: null, episode: 0, parkedAt: null, episodeNotified: false,
-  latecomer: false, hadPriorTurns: false, pausedByLimitless: null, blocked: 0, mode: "on", lastError: null,
-  lastRelease: null, resumeHold: null,
+  latecomer: false, hadPriorTurns: false, pausedByKeepalive: null, blocked: 0, mode: "on", lastError: null,
+  lastRelease: null, resumeHold: null, usageHistory: [],
 });
+
+const USAGE_HISTORY_MS = 3 * 3600_000;
+
+// Highest utilization per window over every account, appended to a 3-hour history for the /keepalive forecast.
+export function appendUsageHistory(history, snapshots, t) {
+  const util = {};
+  for (const s of snapshots ?? []) {
+    for (const w of s?.windows ?? []) {
+      const kind = w?.kind ?? w?.window;
+      const value = w?.utilization ?? w?.used_percent;
+      if (typeof kind === "string" && Number.isFinite(value)) util[kind] = Math.max(util[kind] ?? 0, value);
+    }
+  }
+  const kept = (Array.isArray(history) ? history : []).filter((e) => Number.isFinite(e?.t) && t - e.t <= USAGE_HISTORY_MS && e.t <= t);
+  if (Object.keys(util).length > 0) kept.push({ t, util });
+  return kept.slice(-120);
+}
 
 const errText = (error) => String(error instanceof Error ? error.message : error);
 
@@ -315,10 +334,10 @@ export function createCore(pi, { config, deps = {} } = {}) {
     canWarm: () => core.isParked() && core.state.parkState === "park-wait" && !core.isLatecomer()
       && core.state.warm?.on === true && core.state.source !== "reactive",
     canParkExit: () => core.isParked() && core.state.parkState === "park-exit" && !core.isLatecomer(),
-    ownedGoalId: () => core.state.pausedByLimitless ?? null,
+    ownedGoalId: () => core.state.pausedByKeepalive ?? null,
     blockReason() {
       const { window, util, resetAt } = core.state;
-      return `limitless: usage limit ${window ?? "unknown"} ${util ?? "?"}% - resumes ${knownTime(resetAt) ? hhmm(resetAt, now()) : "when the reset time is known (not known yet)"}`;
+      return `keepalive: usage limit ${window ?? "unknown"} ${util ?? "?"}% - resumes ${knownTime(resetAt) ? hhmm(resetAt, now()) : "when the reset time is known (not known yet)"}`;
     },
 
     onTransition(fn) { transitionFns.push(fn); },
@@ -406,7 +425,7 @@ export function createCore(pi, { config, deps = {} } = {}) {
           core.recordError("goal-pause", error);
           return null;
         }
-        core.state.pausedByLimitless = goal.id;
+        core.state.pausedByKeepalive = goal.id;
         core.persist();
         if (holdingNotice) core.announceGoalHeld();
         return goal.id;
@@ -416,11 +435,11 @@ export function createCore(pi, { config, deps = {} } = {}) {
     },
 
     async releaseOwnedGoal({ reason = "release" } = {}) {
-      const owned = core.state.pausedByLimitless;
+      const owned = core.state.pausedByKeepalive;
       if (!owned) return false;
       const ctx = core.lastCtx;
       const goal = await core.readGoal(ctx);
-      core.state.pausedByLimitless = null;
+      core.state.pausedByKeepalive = null;
       if (goal?.status !== "paused" || goal.id !== owned) {
         core.persist();
         return false;
@@ -428,7 +447,7 @@ export function createCore(pi, { config, deps = {} } = {}) {
       try {
         await goalStore.setStatus(ctx, "active");
       } catch (error) {
-        core.state.pausedByLimitless = owned;
+        core.state.pausedByKeepalive = owned;
         core.recordError("goal-resume", error);
         return false;
       }
@@ -481,7 +500,7 @@ export function createCore(pi, { config, deps = {} } = {}) {
         // One persistent notice per episode, for a parked goal and for a goal-less (or user-paused-goal) session
         // alike: a transient status line is overwritten by the next setStatus, so the no-goal text must live in the
         // same widget. A later goal pause replaces it with the goal notice (announceGoalHeld).
-        const goalOwned = pausedNow !== null || s.pausedByLimitless !== null;
+        const goalOwned = pausedNow !== null || s.pausedByKeepalive !== null;
         core.setNotice(parkNoticeText(s, now(), goalOwned));
       }
       core.persist();
@@ -531,10 +550,11 @@ export function createCore(pi, { config, deps = {} } = {}) {
       if (epoch !== core.sessionEpoch) return core.state.decision;
       core.state.decision = decision;
       core.state.lastPollAt = t;
+      core.state.usageHistory = appendUsageHistory(core.state.usageHistory, core.state.snapshots, t);
       expireResumeHold();
       core.persist();
       const hold = core.state.resumeHold;
-      // /limitless resume holds the SAME window until its resetAt; any over window outside the held set, or an already parked session, is not held.
+      // /keepalive resume holds the SAME window until its resetAt; any over window outside the held set, or an already parked session, is not held.
       const over = hold ? overWindows({ snapshots: core.state.snapshots, config }) : null;
       const held = Boolean(hold) && !core.isParked() && over.size > 0 && [...over.keys()].every((kind) => kind in hold.windows);
       if (!held && (decision.state === "park-wait" || decision.state === "park-exit")) {
@@ -547,7 +567,7 @@ export function createCore(pi, { config, deps = {} } = {}) {
       return decision;
     },
 
-    // ── senpi event handlers (wired by limitless.mjs) ──
+    // ── senpi event handlers (wired by keepalive.mjs) ──
     async handleSessionStart(event, ctx) {
       if (vetoed) return;
       core.lastCtx = ctx;
@@ -621,7 +641,7 @@ export function createCore(pi, { config, deps = {} } = {}) {
       userRun = !goalRun;
       if (!core.enabled() || !core.isParked()) return undefined;
       if (!(await raceBlock(ctx, continuation))) return undefined;
-      return { message: { customType: "limitless-park-note", content: TEXTS.raceNote, display: false } };
+      return { message: { customType: "keepalive-park-note", content: TEXTS.raceNote, display: false } };
     },
     // senpi emits no before_agent_start for a run started from the followUp queue (agent-session.js
     // _scheduleContinuationAfterCurrentEvent :6733; before_agent_start only at :3790 for a prompt and :4293 for an idle
@@ -648,9 +668,9 @@ export function createCore(pi, { config, deps = {} } = {}) {
       if (vetoed) return undefined;
       core.lastCtx = ctx;
       // A goal-driven run that is still looping when a park lands stops here: no autonomous goal work after the park,
-      // but only while limitless holds the goal paused (IS-1: a session without such a goal is never gated).
+      // but only while keepalive holds the goal paused (IS-1: a session without such a goal is never gated).
       if (core.blockAllToolsInTurn() || (goalRun && core.enabled() && core.isParked() && core.ownedGoalId() !== null)) {
-        const reason = core.isParked() ? `${core.blockReason()} - tools are disabled in this wait turn` : "limitless: tools are disabled in this wait turn";
+        const reason = core.isParked() ? `${core.blockReason()} - tools are disabled in this wait turn` : "keepalive: tools are disabled in this wait turn";
         return { block: true, reason };
       }
       if (!SPAWN_TOOLS.has(event?.toolName) || !core.enabled() || !core.isParked()) return undefined;
@@ -670,7 +690,7 @@ export function createCore(pi, { config, deps = {} } = {}) {
   async function raceBlock(ctx, continuation) {
     const goal = await core.readGoal(ctx);
     if (goal?.status === "active") await core.pauseActiveGoal({ notice: true });
-    else if (continuation && !(goal?.status === "paused" && goal.id === core.state.pausedByLimitless)) return false;
+    else if (continuation && !(goal?.status === "paused" && goal.id === core.state.pausedByKeepalive)) return false;
     if (!continuation) return false;
     core.markExtensionTurn("goal-race");
     return true;
@@ -699,16 +719,16 @@ export function createCore(pi, { config, deps = {} } = {}) {
   }
 
   // IS-1: while parked, a session with an active goal never spawns. The block does not depend on the pause landing
-  // (a failed pause still blocks) nor on the goal being readable (a limitless-owned pause is remembered in state).
+  // (a failed pause still blocks) nor on the goal being readable (a keepalive-owned pause is remembered in state).
   async function gated(ctx) {
     let goal = null;
     try {
       goal = (await goalStore.read(ctx)) ?? null;
     } catch (error) {
       core.recordError("goal-read", error);
-      return core.state.pausedByLimitless !== null;
+      return core.state.pausedByKeepalive !== null;
     }
-    if (goal?.status === "paused" && goal.id === core.state.pausedByLimitless) return true;
+    if (goal?.status === "paused" && goal.id === core.state.pausedByKeepalive) return true;
     if (goal?.status !== "active") return false;
     await core.pauseActiveGoal({ notice: true });
     return true;
@@ -746,7 +766,7 @@ export function createCore(pi, { config, deps = {} } = {}) {
         // A park whose reset already passed is not re-applied; only a fresh decision can park again.
         Object.assign(core.state, { parkState: "ok", armed: false, latecomer: false, source: null, window: null,
           util: null, resetAt: null, reason: null, warm: null, episodeNotified: false });
-        staleOwnedGoal = core.state.pausedByLimitless !== null;
+        staleOwnedGoal = core.state.pausedByKeepalive !== null;
       }
     }
     return true;
@@ -774,7 +794,7 @@ export function createCore(pi, { config, deps = {} } = {}) {
   function applySession() {
     if (core.isParked()) {
       core.setStatus(statusText(core.state.resetAt, now())); // restart mid-park: the park survives
-      core.setNotice(parkNoticeText(core.state, now(), core.state.pausedByLimitless !== null));
+      core.setNotice(parkNoticeText(core.state, now(), core.state.pausedByKeepalive !== null));
     } else {
       core.setStatus(undefined);
       core.setNotice(undefined);
@@ -799,7 +819,7 @@ export function createCore(pi, { config, deps = {} } = {}) {
 
   async function snapshotFor(provider, account, t) {
     // Test-only fake usage source: never read nor write the shared per-account snapshot.
-    const fakeMode = Boolean(env?.OMO_LIMITLESS_FAKE_USAGE_FILE);
+    const fakeMode = Boolean(env?.OMO_KEEPALIVE_FAKE_USAGE_FILE);
     const shared = fakeMode ? null : readSharedSnapshot({ homeDir, provider, account, fs });
     // A shared snapshot whose window already reset is stale whatever its age: read the endpoint instead.
     const pastReset = (shared?.snapshot?.windows ?? []).some((w) => Number.isFinite(w?.resetAt) && w.resetAt <= t);
@@ -838,8 +858,8 @@ export function createCore(pi, { config, deps = {} } = {}) {
       }
     }
     if (epoch !== core.sessionEpoch) return { state: "unknown", reason: "session reset" };
-    const fakeReset = Number(env.OMO_LIMITLESS_FAKE_RESET_IN_MS);
-    const usable = snapshots.map((s) => env.OMO_LIMITLESS_FAKE_RESET_IN_MS && Number.isFinite(fakeReset)
+    const fakeReset = Number(env.OMO_KEEPALIVE_FAKE_RESET_IN_MS);
+    const usable = snapshots.map((s) => env.OMO_KEEPALIVE_FAKE_RESET_IN_MS && Number.isFinite(fakeReset)
       ? { ...s, windows: (s?.windows ?? []).map((w) => ({ ...w, resetAt: t + fakeReset })) }
       : s);
     core.state.snapshots = usable;

@@ -8,7 +8,7 @@ const flatten = (obj, prefix = "") =>
     v !== null && typeof v === "object" ? flatten(v, prefix + k + ".") : [[prefix + k, v]]);
 
 const expected = Object.fromEntries(flatten(DEFAULTS));
-const FORBIDDEN = [/OMO_LIMITLESS_CONFIG/, /OMO_LIMITLESS_FAKE_\w*/, /OMO_LIMITLESS_WARM_INTERVAL_MS/, /OMO_LIMITLESS_AUTH_PATH/, /OMO_LIMITLESS_QA_COMMAND_PREFIX/];
+const FORBIDDEN = [/OMO_KEEPALIVE_CONFIG/, /OMO_KEEPALIVE_FAKE_\w*/, /OMO_KEEPALIVE_WARM_INTERVAL_MS/, /OMO_KEEPALIVE_AUTH_PATH/, /OMO_KEEPALIVE_QA_COMMAND_PREFIX/];
 
 for (const file of ["README.md", "README.ko.md"]) {
   const text = readFileSync(new URL("../" + file, import.meta.url), "utf8");

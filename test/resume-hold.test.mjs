@@ -3,7 +3,7 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
-import { startLimitless } from "../extension/limitless.mjs";
+import { startKeepalive } from "../extension/keepalive.mjs";
 import { createHarness } from "./harness.mjs";
 
 const T0 = 1_700_000_000_000;
@@ -25,15 +25,15 @@ function boot(homeDir, now, extraDeps = {}) {
     sessionId: "hold-test", homeDir, idle: true, now,
     model: { api: "claude-sdk-oauth", provider: "anthropic-subscription", id: "claude-sonnet" },
     goal: { id: "goal-1", status: "active" },
-    env: { OMO_LIMITLESS_FAKE_USAGE_FILE: join(homeDir, "usage.json") },
+    env: { OMO_KEEPALIVE_FAKE_USAGE_FILE: join(homeDir, "usage.json") },
   });
   h.installFakeGoalExtension();
-  const core = startLimitless(h.pi, h.deps(extraDeps));
-  return { h, core, command: h.commands.get("limitless") };
+  const core = startKeepalive(h.pi, h.deps(extraDeps));
+  return { h, core, command: h.commands.get("keepalive") };
 }
 
 async function setup(t, initial = usage(95, 10)) {
-  const homeDir = mkdtempSync(join(tmpdir(), "limitless-hold-"));
+  const homeDir = mkdtempSync(join(tmpdir(), "keepalive-hold-"));
   t.after(() => rmSync(homeDir, { recursive: true, force: true }));
   const first = boot(homeDir, T0);
   first.h.writeHomeJson("usage.json", initial);
@@ -62,7 +62,7 @@ test("resume holds the same window: polls never re-park until its resetAt", asyn
   }
   assert.equal(core.state.decision.state, "park-wait", "the poll still sees the window over threshold");
   assert.equal(h.goalStore.goal.status, "active");
-  assert.equal(h.statusLines.get("limitless"), "🔄");
+  assert.equal(h.statusLines.get("omo-keepalive"), "🔄");
   assert.equal(h.notice(), undefined);
 });
 
@@ -72,7 +72,7 @@ test("the hold expires at the window's resetAt and normal gating resumes", async
   assert.ok(core.state.resumeHold);
   await pollLater(h, FIVE_RESET - h.clock.now() + 1_000);
   assert.equal(core.state.resumeHold, null);
-  assert.equal(h.readHomeJson(".omo/limitless/state/hold-test.json").resumeHold, null);
+  assert.equal(h.readHomeJson(".omo/keepalive/state/hold-test.json").resumeHold, null);
 });
 
 test("a different window crossing the threshold during the hold parks", async (t) => {
@@ -86,7 +86,7 @@ test("a different window crossing the threshold during the hold parks", async (t
 });
 
 test("a hold on seven_day does not hide a five_hour crossing", async (t) => {
-  const homeDir = mkdtempSync(join(tmpdir(), "limitless-hold-"));
+  const homeDir = mkdtempSync(join(tmpdir(), "keepalive-hold-"));
   t.after(() => rmSync(homeDir, { recursive: true, force: true }));
   const { h, core, command } = boot(homeDir, T0);
   h.writeHomeJson("usage.json", usage(10, 96));
@@ -103,7 +103,7 @@ test("a hold on seven_day does not hide a five_hour crossing", async (t) => {
   assert.equal(core.isParked(), true);
 });
 
-test("/limitless park clears the hold", async (t) => {
+test("/keepalive park clears the hold", async (t) => {
   const { h, core, command } = await setup(t);
   await pollLater(h);
   await command.handler("park", h.ctx);
@@ -163,7 +163,7 @@ async function parkAndResume(b) {
   assert.equal(b.core.isParked(), false);
 }
 const tmpHome = (t) => {
-  const d = mkdtempSync(join(tmpdir(), "limitless-hold-"));
+  const d = mkdtempSync(join(tmpdir(), "keepalive-hold-"));
   t.after(() => rmSync(d, { recursive: true, force: true }));
   return d;
 };
@@ -199,10 +199,10 @@ test("each held window expires at its own resetAt", async (t) => {
 test("an external control-file off clears the hold", async (t) => {
   const { h, core } = await setup(t);
   assert.ok(core.state.resumeHold);
-  h.writeHomeJson(".omo/limitless/control/hold-test.json", { v: 1, mode: "off" });
+  h.writeHomeJson(".omo/keepalive/control/hold-test.json", { v: 1, mode: "off" });
   await pollLater(h);
   assert.equal(core.state.resumeHold, null);
-  h.writeHomeJson(".omo/limitless/control/hold-test.json", { v: 1, mode: "on" });
+  h.writeHomeJson(".omo/keepalive/control/hold-test.json", { v: 1, mode: "on" });
   await pollLater(h);
   assert.equal(core.isParked(), true, "gating is back to normal");
 });

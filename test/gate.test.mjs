@@ -1,7 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { createHarness, GOAL_CONTINUATION_TEXT } from "./harness.mjs";
-import { startLimitless } from "../extension/limitless.mjs";
+import { startKeepalive } from "../extension/keepalive.mjs";
 import { hhmm, statusText, STATUS_KEY, IDLE_STATUS, TEXTS } from "../extension/core.mjs";
 import { snapshotPath, statePath, writeSharedSnapshot } from "../extension/state.mjs";
 import { existsSync, readFileSync, writeFileSync, mkdirSync } from "node:fs";
@@ -28,8 +28,8 @@ function setup({ util = 95, branch = [], goal = null, shared, readUsage, homeDir
     return snap(typeof util === "function" ? util() : util, typeof resetAt === "function" ? resetAt() : RESET);
   });
   beforeStart?.(h);
-  const core = startLimitless(h.pi, h.deps({ readUsage: reader }), features);
-  const state = () => h.readHomeJson(`.omo/limitless/state/s1.json`);
+  const core = startKeepalive(h.pi, h.deps({ readUsage: reader }), features);
+  const state = () => h.readHomeJson(`.omo/keepalive/state/s1.json`);
   return { h, core, usageCalls, state };
 }
 
@@ -111,7 +111,7 @@ test("process restart mid-park restores the no-goal notice", async () => {
   } finally { first.h.cleanup(); }
 });
 
-test("goal activated during the park is paused in the same tick with pausedByLimitless and the exact notice", async () => {
+test("goal activated during the park is paused in the same tick with pausedByKeepalive and the exact notice", async () => {
   const { h, core, state } = setup();
   try {
     await h.fire("session_start", { type: "session_start", reason: "startup" });
@@ -120,9 +120,9 @@ test("goal activated during the park is paused in the same tick with pausedByLim
     await h.pi.events.emit("goal_store_changed", { threadId: "s1" });
     assert.equal(h.goalStore.goal.status, "paused");
     assert.equal(core.ownedGoalId(), "g1");
-    assert.equal(state().pausedByLimitless, "g1");
+    assert.equal(state().pausedByKeepalive, "g1");
     assert.deepEqual(h.sentMessages, [], "no conversation message");
-    assert.equal(h.notice(), `goal은 ${hhmm(RESET)} 리셋 뒤 시작합니다. 지금 돌리려면 /limitless resume`, "the goal text replaces the no-goal text");
+    assert.equal(h.notice(), `goal은 ${hhmm(RESET)} 리셋 뒤 시작합니다. 지금 돌리려면 /keepalive resume`, "the goal text replaces the no-goal text");
     assert.doesNotMatch(h.notice(), /goal이 없어/);
     assert.equal(h.notifications.length, 0, "the goal-held notice is a widget, not a status line that the next status overwrites");
     const turn = await h.runTurn({ tools: ["task"] });
@@ -146,15 +146,15 @@ test("latecomer gets no warm turn and no park-exit; a session with prior turns m
   } finally { for (const s of [late, prior, lateExit]) s.h.cleanup(); }
 });
 
-test("running goal at park: task blocked with limitless: prefix, read allowed, goal paused once and persisted", async () => {
+test("running goal at park: task blocked with keepalive: prefix, read allowed, goal paused once and persisted", async () => {
   const { h, core, state } = setup({ branch: PRIOR_TURN, goal: GOAL });
   try {
     await h.fire("session_start", { type: "session_start", reason: "startup" });
     const results = await h.fire("tool_call", { type: "tool_call", toolName: "task", toolCallId: "t1", input: {} });
     const block = results.find((r) => r?.block);
     assert.equal(block.block, true);
-    assert.ok(block.reason.startsWith("limitless:"));
-    assert.equal(block.reason, `limitless: usage limit five_hour 95% - resumes ${hhmm(RESET)}`);
+    assert.ok(block.reason.startsWith("keepalive:"));
+    assert.equal(block.reason, `keepalive: usage limit five_hour 95% - resumes ${hhmm(RESET)}`);
     const readResults = await h.fire("tool_call", { type: "tool_call", toolName: "read", toolCallId: "t2", input: {} });
     assert.equal(readResults.some((r) => r?.block), false);
     await h.runTurn({ tools: ["read", "bash", "task_create"] });
@@ -162,7 +162,7 @@ test("running goal at park: task blocked with limitless: prefix, read allowed, g
     await h.runTurn({ tools: ["task"] });
     assert.deepEqual(h.goalStore.setStatusCalls, ["paused"]);
     assert.equal(h.goalStore.goal.status, "paused");
-    assert.equal(state().pausedByLimitless, "g1");
+    assert.equal(state().pausedByKeepalive, "g1");
     assert.equal(core.isLatecomer(), false);
     assert.equal(h.notifications.length, 0, "the goal park notice is a persistent message");
     assert.match(h.notice(), /goal을 멈췄고/);
@@ -190,13 +190,13 @@ test("polls are throttled to pollMinIntervalMs and N sessions share one poll thr
   } finally { a.h.cleanup(); }
 });
 
-for (const order of ["goal-handler-first", "limitless-handler-first"]) {
+for (const order of ["goal-handler-first", "keepalive-handler-first"]) {
   test(`race (${order}): goal continuation while parked runs zero tool calls and the goal ends paused`, async () => {
     const { h, core } = setup({
       beforeStart: (harness) => { if (order === "goal-handler-first") harness.installFakeGoalExtension(); },
     });
     try {
-      if (order === "limitless-handler-first") h.installFakeGoalExtension();
+      if (order === "keepalive-handler-first") h.installFakeGoalExtension();
       await h.fire("session_start", { type: "session_start", reason: "startup" });
       h.setGoal(GOAL);
       await h.pi.events.emit("goal_store_changed", { threadId: "s1" });
@@ -313,11 +313,11 @@ test("process restart with a non-parked state clears a stale notice widget", asy
   const { h } = setup({
     util: 10, // below threshold: no fresh park that would set a new notice
     beforeStart: (harness) => {
-      harness.writeHomeJson(".omo/limitless/state/s1.json", { v: 1, parkState: "ok", armed: false });
+      harness.writeHomeJson(".omo/keepalive/state/s1.json", { v: 1, parkState: "ok", armed: false });
     },
   });
   try {
-    h.ctx.ui.setWidget("limitless-notice", ["stale notice"]);
+    h.ctx.ui.setWidget("keepalive-notice", ["stale notice"]);
     await h.fire("session_start", { type: "session_start", reason: "resume" });
     assert.equal(h.notice(), undefined);
   } finally { h.cleanup(); }
@@ -327,9 +327,9 @@ test("a state file whose reset already passed does not re-park; the owned goal r
   for (const reader of [async () => snap(10), async () => snap(0, 0, "none")]) {
     const { h, core } = setup({
       branch: PRIOR_TURN, goal: { ...GOAL, status: "paused" }, readUsage: reader,
-      beforeStart: (harness) => harness.writeHomeJson(".omo/limitless/state/s1.json", {
+      beforeStart: (harness) => harness.writeHomeJson(".omo/keepalive/state/s1.json", {
         v: 1, parkState: "park-wait", armed: true, source: "poll", window: "five_hour", util: 95,
-        resetAt: T0 - 1000, pausedByLimitless: "g1", episode: 1, episodeNotified: true,
+        resetAt: T0 - 1000, pausedByKeepalive: "g1", episode: 1, episodeNotified: true,
       }),
     });
     try {
@@ -359,12 +359,12 @@ test("usage drop below threshold at a boundary releases a poll park and resumes 
   } finally { h.cleanup(); }
 });
 
-test("real usage reader through OMO_LIMITLESS_FAKE_USAGE_FILE parks without any network", async () => {
+test("real usage reader through OMO_KEEPALIVE_FAKE_USAGE_FILE parks without any network", async () => {
   const h = createHarness({ model: CLAUDE, now: T0, goal: GOAL, branch: PRIOR_TURN });
   try {
     h.writeHomeJson(".omo/agent/auth.json", { "anthropic-subscription": { access: "not-a-real-token" } });
     const file = h.writeHomeJson("usage.json", { "anthropic-subscription": { five_hour: { utilization: 95, resetAt: RESET }, seven_day: { utilization: 10, resetAt: RESET + 86400000 } } });
-    const core = startLimitless(h.pi, h.deps({ env: { OMO_LIMITLESS_FAKE_USAGE_FILE: file }, fetch: undefined }));
+    const core = startKeepalive(h.pi, h.deps({ env: { OMO_KEEPALIVE_FAKE_USAGE_FILE: file }, fetch: undefined }));
     await h.fire("session_start", { type: "session_start", reason: "startup" });
     assert.equal(core.isParked(), true);
     assert.equal(core.state.snapshots[0].source, "fake");
@@ -372,16 +372,16 @@ test("real usage reader through OMO_LIMITLESS_FAKE_USAGE_FILE parks without any 
   } finally { h.cleanup(); }
 });
 
-test("child sessions stay inert under startLimitless; the integrated main session registers only /limitless", () => {
+test("child sessions stay inert under startKeepalive; the integrated main session registers only /keepalive", () => {
   const child = createHarness();
   const main = createHarness();
   try {
-    assert.equal(startLimitless(child.pi, child.deps({ env: { SENPI_TASK_MEMBER: "1" } })), null);
+    assert.equal(startKeepalive(child.pi, child.deps({ env: { SENPI_TASK_MEMBER: "1" } })), null);
     assert.equal(child.handlers.size, 0);
     assert.equal(child.commands.size, 0);
-    const core = startLimitless(main.pi, main.deps());
+    const core = startKeepalive(main.pi, main.deps());
     assert.ok(core);
-    assert.deepEqual([...main.commands.keys()], ["limitless"]);
+    assert.deepEqual([...main.commands.keys()], ["keepalive"]);
     for (const name of ["session_start", "before_agent_start", "tool_call", "turn_end", "agent_settled", "event:goal_store_changed"]) {
       assert.ok(main.handlers.has(name), name);
     }
@@ -407,7 +407,7 @@ test("timers run on the injected clock and the control hook runs first", async (
 });
 
 // ── ROUND 2: reset path, restart rule, owner check, warm in transitions, pre-start gate, core.readUsage ──
-// These drive the real core through startLimitless with no feature modules (features = []), so the core
+// These drive the real core through startKeepalive with no feature modules (features = []), so the core
 // contract is tested on its own; the feature modules call these same entry points.
 const CORE_ONLY = [];
 const WARM_DECISION = { state: "park-wait", window: "five_hour", resetAt: RESET, reason: "five_hour 95%", util: 95 };
@@ -439,7 +439,7 @@ for (const source of ["poll", "manual", "reactive"]) {
       assert.equal(h.queuedTurns.length, 1, "exactly one continuation turn");
       assert.equal(h.sentUserMessages.length, 0);
       assert.equal(core.ownedGoalId(), null);
-      assert.equal(h.readHomeJson(".omo/limitless/state/s1.json").parkState, "ok");
+      assert.equal(h.readHomeJson(".omo/keepalive/state/s1.json").parkState, "ok");
     } finally { h.cleanup(); }
   });
 }
@@ -518,7 +518,7 @@ test("reset with a goal the user paused (other id, paused before the park, or no
   }
 });
 
-test("releaseOwnedGoal never resumes a paused goal whose id differs from pausedByLimitless", async () => {
+test("releaseOwnedGoal never resumes a paused goal whose id differs from pausedByKeepalive", async () => {
   const { h, core } = setup({ branch: PRIOR_TURN, goal: GOAL, features: CORE_ONLY });
   try {
     await h.fire("session_start", { type: "session_start", reason: "startup" });
@@ -543,7 +543,7 @@ test("onBeforeSessionStart veto: the core writes nothing, polls nothing, pauses 
   } };
   const prior = JSON.stringify({ v: 1, parkState: "ok", armed: false, marker: "from-previous-process" });
   const { h, core, usageCalls } = setup({ branch: PRIOR_TURN, goal: GOAL, features: [vetoer],
-    beforeStart: (harness) => harness.writeHomeJson(".omo/limitless/state/s1.json", prior) });
+    beforeStart: (harness) => harness.writeHomeJson(".omo/keepalive/state/s1.json", prior) });
   try {
     await h.fire("session_start", { type: "session_start", reason: "startup" });
     assert.deepEqual(seenAtHook, [{ sid: "s1", start: "from-previous-process" }]);
@@ -608,7 +608,7 @@ test("core.readUsage with production deps (no injected reader) uses usage.mjs: f
   try {
     h.writeHomeJson(".omo/agent/auth.json", { "anthropic-subscription": { access: "not-a-real-token" } });
     const file = h.writeHomeJson("usage.json", { "anthropic-subscription": { five_hour: { utilization: 95, resetAt: RESET } } });
-    const core = startLimitless(h.pi, h.deps({ env: { OMO_LIMITLESS_FAKE_USAGE_FILE: file }, fetch: undefined }), CORE_ONLY);
+    const core = startKeepalive(h.pi, h.deps({ env: { OMO_KEEPALIVE_FAKE_USAGE_FILE: file }, fetch: undefined }), CORE_ONLY);
     const r = await core.readUsage("anthropic-subscription", "default");
     assert.equal(r.source, "fake");
     assert.equal(r.windows[0].utilization, 95);
@@ -663,30 +663,30 @@ test("unknown reset: status line is exactly the no-time text and no notice/goal/
 test("config warnings: one warning notification at session_start, one line per key, max 3 then 외 N개", async () => {
   const { h } = setup({
     util: 10,
-    beforeStart: (h) => h.writeHomeJson(".omo/limitless/config.json", {
+    beforeStart: (h) => h.writeHomeJson(".omo/keepalive/config.json", {
       thresholds: { fiveHour: "x" }, warm: { "anthropic-subscription": { on: 3 } }, enabled: "no", pollMinIntervalMs: -1,
     }),
   });
   try {
     await h.fire("session_start", { type: "session_start", reason: "startup" });
-    const warnings = h.notifications.filter((n) => n.text.startsWith("limitless 설정 오류"));
+    const warnings = h.notifications.filter((n) => n.text.startsWith("keepalive 설정 오류"));
     assert.equal(warnings.length, 1);
     assert.equal(warnings[0].level, "warning");
     assert.deepEqual(warnings[0].text.split("\n"), [
-      "limitless 설정 오류: thresholds.fiveHour 값이 잘못돼 기본값(90)을 씁니다",
-      "limitless 설정 오류: warm.anthropic-subscription.on 값이 잘못돼 기본값(true)을 씁니다",
-      "limitless 설정 오류: enabled 값이 잘못돼 기본값(true)을 씁니다",
+      "keepalive 설정 오류: thresholds.fiveHour 값이 잘못돼 기본값(90)을 씁니다",
+      "keepalive 설정 오류: warm.anthropic-subscription.on 값이 잘못돼 기본값(true)을 씁니다",
+      "keepalive 설정 오류: enabled 값이 잘못돼 기본값(true)을 씁니다",
       "외 1개",
     ]);
     await h.fire("session_start", { type: "session_start", reason: "resume" });
-    assert.equal(h.notifications.filter((n) => n.text.startsWith("limitless 설정 오류")).length, 1);
+    assert.equal(h.notifications.filter((n) => n.text.startsWith("keepalive 설정 오류")).length, 1);
   } finally { h.cleanup(); }
 });
 
 test("valid config: no config warning notification", async () => {
-  const { h } = setup({ util: 10, beforeStart: (h) => h.writeHomeJson(".omo/limitless/config.json", { thresholds: { fiveHour: 80 } }) });
+  const { h } = setup({ util: 10, beforeStart: (h) => h.writeHomeJson(".omo/keepalive/config.json", { thresholds: { fiveHour: 80 } }) });
   try {
     await h.fire("session_start", { type: "session_start", reason: "startup" });
-    assert.equal(h.notifications.filter((n) => n.text.startsWith("limitless 설정 오류")).length, 0);
+    assert.equal(h.notifications.filter((n) => n.text.startsWith("keepalive 설정 오류")).length, 0);
   } finally { h.cleanup(); }
 });

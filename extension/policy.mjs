@@ -156,11 +156,7 @@ export function decide({ snapshots, config, now }) {
     state,
     window: bindingWindow.kind,
     resetAt: providerResetAt,
-    warm: {
-      on: warmOn,
-      intervalMs: warmConfig?.intervalMs,
-      requireTtlSeconds: warmConfig?.requireTtlSeconds
-    },
+    warm: { on: warmOn },
     reason
   };
 }

@@ -1,4 +1,4 @@
-// limitless feature module: plan todo 8 "Park-exit with omo-health park record and resume on relaunch".
+// keepalive feature module: plan todo 8 "Park-exit with omo-health park record and resume on relaunch".
 //
 // Exit path (policy says park-exit):
 //   background work drained + idle + relauncher confirmed
@@ -9,7 +9,7 @@
 //   "terminal-background-sessions" background bash, "terminal-monitors", and any other. Exiting kills all of it, so
 //   ANY source above zero, or a report whose count is unreadable (unknown != zero), holds the exit.
 //   -> write <parksDir>/<sid>.<createdAt>.park.json (REPORT 9 D7) -> state parkState "exited"
-//   -> goal limitless paused set back to active -> ctx.shutdown().
+//   -> goal paused by keepalive set back to active -> ctx.shutdown().
 //   Any missing condition holds the session in park-wait without warming; todo 7 resumes it at reset.
 // Relaunch path (session_start with own state parkState "exited"):
 //   exclusive start claim <parksDir>/<sid>.<parkId>.start ({pid, startedAt, at}); a live foreign claim -> write
@@ -41,7 +41,7 @@ const GOAL_CONTINUATION_CAP = 8; // senpi goal/index.js:140-148
 const CHILD_WAKE_SOURCES = new Set(["senpi-task", "omo-dag"]); // omo-rollover/extension/rollover.ts:27
 const TIMER = "park-exit";
 const GATE_TIMER = "park-exit-gate";
-// After a session_start (reload included) limitless is loaded BEFORE the builtin terminal / ask-user / loop-guard and the
+// After a session_start (reload included) keepalive is loaded BEFORE the builtin terminal / ask-user / loop-guard and the
 // bundled codemode extensions, so its wake map is empty while they re-publish the counts of background work that survived.
 // No exit is attempted until the session settled once (turn_end / agent_settled) AND this grace passed on the injected clock.
 export const START_GRACE_MS = 5000;
@@ -242,10 +242,10 @@ export function install(core) {
         v: 1, parkId, sessionId: sid, cwd, terminal,
         provider: core.lane?.provider ?? null, account: core.lane?.accounts?.[0] ?? "default",
         window: core.state.window, resetAt: core.state.resetAt, reason: "usage-limit",
-        goal: owned ? { id: owned, pausedByLimitless: true } : null,
+        goal: owned ? { id: owned, pausedByKeepalive: true } : null,
         status: "pending", createdAt, claim: null, result: null,
         ...(selfTask ? { selfTask, launcher } : {}),
-        ...(env.OMO_LIMITLESS_QA_COMMAND_PREFIX ? { qaCommandPrefix: env.OMO_LIMITLESS_QA_COMMAND_PREFIX } : {}),
+        ...(env.OMO_KEEPALIVE_QA_COMMAND_PREFIX ? { qaCommandPrefix: env.OMO_KEEPALIVE_QA_COMMAND_PREFIX } : {}),
       };
       if (!writeJsonAtomic(join(dir(), recordName(sid, createdAt)), record, fs)) {
         if (selfTask) { try { await selfLaunch.unregister({ sessionId: sid, selfTask }); } catch {} }
@@ -254,7 +254,7 @@ export function install(core) {
       }
 
       // Not parked any more from the core's view, so nothing re-pauses the goal we re-activate below.
-      exited = { parkState: "exited", armed: false, pausedByLimitless: null };
+      exited = { parkState: "exited", armed: false, pausedByKeepalive: null };
       Object.assign(core.state, exited);
       Object.assign(my(), { held: false, holdReason: null, parkId, createdAt, terminalKind: terminal.kind,
         selfTask, goalId: owned ?? null, exitedAt: core.now() });
@@ -347,8 +347,8 @@ export function install(core) {
     }
     exited = {};
     core.notify(holder
-      ? `limitless: 이 세션은 이미 다른 프로세스(pid ${holder.pid})에서 열려 있어 이 창을 닫습니다.`
-      : "limitless: 이 세션의 재실행 시작 권한을 얻지 못해 이 창을 닫습니다.", "warning");
+      ? `keepalive: 이 세션은 이미 다른 프로세스(pid ${holder.pid})에서 열려 있어 이 창을 닫습니다.`
+      : "keepalive: 이 세션의 재실행 시작 권한을 얻지 못해 이 창을 닫습니다.", "warning");
     ctx.shutdown();
     return { veto: true };
   });
@@ -389,14 +389,14 @@ export function install(core) {
     }
   }
 
-  // After RELAUNCH_REPARK_LIMIT consecutive re-parks right after relaunch: switch limitless off for this
+  // After RELAUNCH_REPARK_LIMIT consecutive re-parks right after relaunch: switch keepalive off for this
   // session through the control file (todo 9 contract), release the park, and notify once.
   async function stopReparking() {
-    writeOrRecord(join(core.homeDir, ".omo", "limitless", "control", `${sanitizeId(core.sessionId)}.json`), { v: 1, mode: "off" });
+    writeOrRecord(join(core.homeDir, ".omo", "keepalive", "control", `${sanitizeId(core.sessionId)}.json`), { v: 1, mode: "off" });
     core.state.mode = "off";
     await core.release({ reason: "relaunch-loop" });
     await core.releaseOwnedGoal({ reason: "relaunch-loop" });
-    core.notify(`limitless: 재실행 직후 ${RELAUNCH_REPARK_LIMIT}번 연속 다시 한도에 걸려 이 세션의 한도 대기를 껐습니다. 다시 켜려면 /limitless on`, "warning");
+    core.notify(`keepalive: 재실행 직후 ${RELAUNCH_REPARK_LIMIT}번 연속 다시 한도에 걸려 이 세션의 한도 대기를 껐습니다. 다시 켜려면 /keepalive on`, "warning");
   }
 
   core.pi.events?.on?.("wake_source_state", (data) => {

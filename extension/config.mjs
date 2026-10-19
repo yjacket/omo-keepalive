@@ -8,9 +8,11 @@ export const DEFAULTS = {
     "anthropic-subscription": 14400000,
     "chatgpt-subscription": 7200000,
   },
+  // Whether the keepwarm feature may warm a session while it waits in park-wait. When and how often it pings is
+  // keepwarm's lane table, not this config.
   warm: {
-    "anthropic-subscription": { on: true, intervalMs: 3300000 },
-    "chatgpt-subscription": { on: true, intervalMs: 1620000, requireTtlSeconds: 1800 },
+    "anthropic-subscription": { on: true },
+    "chatgpt-subscription": { on: true },
   },
   enabled: true,
   pollMinIntervalMs: 60000,
@@ -21,7 +23,7 @@ const isRecord = (value) => value !== null && typeof value === "object" && !Arra
 const validNumber = (value) => typeof value === "number" && Number.isFinite(value) && value >= 0;
 
 export function loadConfig({ env = process.env, homeDir = homedir(), fs = { readFileSync } } = {}) {
-  const path = env.OMO_LIMITLESS_CONFIG || join(homeDir, ".omo", "limitless", "config.json");
+  const path = env.OMO_KEEPALIVE_CONFIG || join(homeDir, ".omo", "keepalive", "config.json");
   let raw;
   try {
     raw = JSON.parse(fs.readFileSync(path, "utf8"));
@@ -48,7 +50,7 @@ export function loadConfig({ env = process.env, homeDir = homedir(), fs = { read
     if (validNumber(value)) config.waitLimitMs[key] = value;
     else warnings.push(`waitLimitMs.${key}: invalid value`);
   }
-  for (const [lane, defaults] of Object.entries(DEFAULTS.warm)) {
+  for (const lane of Object.keys(DEFAULTS.warm)) {
     const value = raw.warm?.[lane];
     if (value === undefined) continue;
     if (!isRecord(value)) {
@@ -58,11 +60,6 @@ export function loadConfig({ env = process.env, homeDir = homedir(), fs = { read
     if (value.on !== undefined) {
       if (typeof value.on === "boolean") config.warm[lane].on = value.on;
       else warnings.push(`warm.${lane}.on: invalid value`);
-    }
-    for (const key of ["intervalMs", ...(defaults.requireTtlSeconds === undefined ? [] : ["requireTtlSeconds"])]) {
-      if (value[key] === undefined) continue;
-      if (validNumber(value[key])) config.warm[lane][key] = value[key];
-      else warnings.push(`warm.${lane}.${key}: invalid value`);
     }
   }
   for (const key of ["enabled", "pollMinIntervalMs", "resumeGraceMs"]) {

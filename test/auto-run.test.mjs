@@ -1,7 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { createHarness } from "./harness.mjs";
-import { startLimitless } from "../extension/limitless.mjs";
+import { startKeepalive } from "../extension/keepalive.mjs";
 
 // Senpi starts an automatic goal continuation from its followUp queue with agent_start and message_start but no
 // before_agent_start (agent-session.js _scheduleContinuationAfterCurrentEvent :6733). These tests use that order.
@@ -20,7 +20,7 @@ async function parked() {
     provider: "anthropic-subscription", account: "default",
     windows: [{ kind: "five_hour", utilization: 95, resetAt: RESET }], overageEnabled: false, source: "endpoint",
   });
-  const core = startLimitless(h.pi, h.deps({ readUsage }));
+  const core = startKeepalive(h.pi, h.deps({ readUsage }));
   await h.fire("session_start", { type: "session_start", reason: "startup" });
   assert.equal(core.isParked(), true);
   h.setGoal(GOAL);
@@ -65,7 +65,7 @@ test("a user chat turn during the park still runs non-task tools, and the goal b
 test("an automatic goal continuation while not parked is untouched", async () => {
   const h = createHarness({ model: CLAUDE, now: T0 });
   h.writeHomeJson(".omo/agent/auth.json", { "anthropic-subscription": { access: "not-a-real-token" } });
-  startLimitless(h.pi, h.deps({ readUsage: async () => ({
+  startKeepalive(h.pi, h.deps({ readUsage: async () => ({
     provider: "anthropic-subscription", account: "default",
     windows: [{ kind: "five_hour", utilization: 10, resetAt: RESET }], overageEnabled: false, source: "endpoint",
   }) }));
@@ -73,26 +73,6 @@ test("an automatic goal continuation while not parked is untouched", async () =>
     await h.fire("session_start", { type: "session_start", reason: "startup" });
     const run = await h.runAutoRun({ kind: "goal", tools: TOOLS });
     assert.deepEqual(run.executed, TOOLS);
-  } finally { h.cleanup(); }
-});
-
-test("a warm timer callback already running when the session shuts down drops its effects (real core)", async () => {
-  const { h, core } = await parked();
-  try {
-    assert.ok(core.timers.has("warm"), "park-wait on Claude arms the warm timer");
-    let entered;
-    const reading = new Promise((resolve) => { entered = resolve; });
-    let release;
-    const gate = new Promise((resolve) => { release = resolve; });
-    const realRead = h.goalStore.read;
-    h.goalStore.read = async (...args) => { entered(); await gate; return realRead(...args); };
-    const ticking = h.clock.tick(55 * 60_000); // the warm callback starts and parks inside the goal read
-    await reading;
-    await h.fire("session_shutdown", { type: "session_shutdown" });
-    release();
-    await ticking;
-    assert.deepEqual(h.sentMessages.filter((m) => m.msg.customType === "limitless-warm"), []);
-    assert.equal(core.timers.has("warm"), false);
   } finally { h.cleanup(); }
 });
 
@@ -119,7 +99,7 @@ async function midRunPark(kind, { steer = false, afterPark } = {}) {
   let util = 10;
   const h = createHarness({ model: CLAUDE, now: T0, branch: PRIOR_TURN, goal: GOAL });
   h.writeHomeJson(".omo/agent/auth.json", { "anthropic-subscription": { access: "not-a-real-token" } });
-  const core = startLimitless(h.pi, h.deps({ readUsage: async () => ({
+  const core = startKeepalive(h.pi, h.deps({ readUsage: async () => ({
     provider: "anthropic-subscription", account: "default",
     windows: [{ kind: "five_hour", utilization: util, resetAt: RESET }], overageEnabled: false, source: "endpoint",
   }) }));
@@ -220,7 +200,7 @@ test("P5: a warm turn ends ok, then senpi's todo-owed backstop starts a run: zer
   try {
     core.markExtensionTurn("warm");
     await h.fire("agent_start", { type: "agent_start" });
-    await h.fire("message_start", { type: "message_start", message: { role: "custom", customType: "limitless-warm", content: "warm", display: false } });
+    await h.fire("message_start", { type: "message_start", message: { role: "custom", customType: "keepalive-warm", content: "warm", display: false } });
     await h.fire("agent_end", { type: "agent_end", messages: [{ role: "assistant", stopReason: "stop", content: [] }] });
     await h.fire("agent_settled", { type: "agent_settled" });
     const run = await h.runAutoRun({ kind: "todo-owed", tools: TOOLS });
@@ -247,7 +227,7 @@ test("a user message steered into a todo-owed run while parked keeps non-task to
 test("control: a todo-owed run while not parked runs tools normally", async () => {
   const h = createHarness({ model: CLAUDE, now: T0, goal: GOAL, branch: PRIOR_TURN });
   h.writeHomeJson(".omo/agent/auth.json", { "anthropic-subscription": { access: "not-a-real-token" } });
-  startLimitless(h.pi, h.deps({ readUsage: async () => ({
+  startKeepalive(h.pi, h.deps({ readUsage: async () => ({
     provider: "anthropic-subscription", account: "default",
     windows: [{ kind: "five_hour", utilization: 10, resetAt: RESET }], overageEnabled: false, source: "endpoint",
   }) }));
@@ -258,7 +238,7 @@ test("control: a todo-owed run while not parked runs tools normally", async () =
   } finally { h.cleanup(); }
 });
 
-// P6 (IS-1): the automatic-run tool block only applies while limitless holds the goal paused.
+// P6 (IS-1): the automatic-run tool block only applies while keepalive holds the goal paused.
 for (const [label, goal] of [
   ["no goal", null],
   ["a goal the user paused", { id: "g2", status: "paused", objective: "w" }],
@@ -269,7 +249,7 @@ for (const [label, goal] of [
     test(`P6: parked with ${label}, an automatic ${kind} run runs every tool`, async () => {
       const h = createHarness({ model: CLAUDE, now: T0, branch: PRIOR_TURN, goal });
       h.writeHomeJson(".omo/agent/auth.json", { "anthropic-subscription": { access: "not-a-real-token" } });
-      const core = startLimitless(h.pi, h.deps({ readUsage: async () => ({
+      const core = startKeepalive(h.pi, h.deps({ readUsage: async () => ({
         provider: "anthropic-subscription", account: "default",
         windows: [{ kind: "five_hour", utilization: 95, resetAt: RESET }], overageEnabled: false, source: "endpoint",
       }) }));
@@ -284,7 +264,7 @@ for (const [label, goal] of [
   }
 }
 
-// Any run the user did not start is blocked while limitless holds the goal paused (F3c bug 1).
+// Any run the user did not start is blocked while keepalive holds the goal paused (F3c bug 1).
 for (const customType of ["senpi-codemode:notification", "senpi-terminal:notification", "ttsr-injection", "loop-guard:recovery"]) {
   test(`a run started by a ${customType} message while owned-parked runs zero tools`, async () => {
     const { h } = await parked();
@@ -294,10 +274,10 @@ for (const customType of ["senpi-codemode:notification", "senpi-terminal:notific
       assert.equal(run.blocked.length, TOOLS.length);
     } finally { h.cleanup(); }
   });
-  test(`a run started by a ${customType} message while limitless does not hold the goal runs every tool`, async () => {
+  test(`a run started by a ${customType} message while keepalive does not hold the goal runs every tool`, async () => {
     const h = createHarness({ model: CLAUDE, now: T0, branch: PRIOR_TURN, goal: null });
     h.writeHomeJson(".omo/agent/auth.json", { "anthropic-subscription": { access: "not-a-real-token" } });
-    const core = startLimitless(h.pi, h.deps({ readUsage: async () => ({
+    const core = startKeepalive(h.pi, h.deps({ readUsage: async () => ({
       provider: "anthropic-subscription", account: "default",
       windows: [{ kind: "five_hour", utilization: 95, resetAt: RESET }], overageEnabled: false, source: "endpoint",
     }) }));
@@ -355,7 +335,7 @@ const userMsg = (text) => ({ role: "user", content: [{ type: "text", text }] });
 async function unownedParked() {
   const h = createHarness({ model: CLAUDE, now: T0, branch: PRIOR_TURN, goal: null });
   h.writeHomeJson(".omo/agent/auth.json", { "anthropic-subscription": { access: "not-a-real-token" } });
-  const core = startLimitless(h.pi, h.deps({ readUsage: async () => ({
+  const core = startKeepalive(h.pi, h.deps({ readUsage: async () => ({
     provider: "anthropic-subscription", account: "default",
     windows: [{ kind: "five_hour", utilization: 95, resetAt: RESET }], overageEnabled: false, source: "endpoint",
   }) }));
@@ -377,7 +357,7 @@ test("P8.1: an idle session_control_delivery run (before_agent_start trigger del
   } finally { h.cleanup(); }
 });
 
-test("P8.1 control: the same delivery run when limitless does not hold the goal runs every tool", async () => {
+test("P8.1 control: the same delivery run when keepalive does not hold the goal runs every tool", async () => {
   const h = await unownedParked();
   try {
     const run = await h.runTurn({ trigger: "delivery", prompt: "from another session", tools: TOOLS });
@@ -414,7 +394,7 @@ test("P8.3: prompts from any input source (typed, rpc, extension sendUserMessage
   }
 });
 
-test("P8.3 control: an extension-sourced prompt when limitless does not hold the goal runs every tool", async () => {
+test("P8.3 control: an extension-sourced prompt when keepalive does not hold the goal runs every tool", async () => {
   const h = await unownedParked();
   try { assert.deepEqual(await promptRun(h, "extension"), { read: false, bash: false, task: false }); } finally { h.cleanup(); }
 });

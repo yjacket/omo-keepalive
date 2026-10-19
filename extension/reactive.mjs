@@ -69,7 +69,7 @@ export function install(core) {
     active = false;
     await core.release({ reason });
     await core.releaseOwnedGoal({ reason });
-    if (notify) core.notify("[limitless] 사용량 한도 대기를 해제했습니다. 다음 턴에서 다시 시도합니다.", "info");
+    if (notify) core.notify("[keepalive] 사용량 한도 대기를 해제했습니다. 다음 턴에서 다시 시도합니다.", "info");
   };
   const scheduleCheck = () => {
     const elapsed = now() - startedAt;
@@ -90,7 +90,7 @@ export function install(core) {
         // core.park, which normalizes an unknown or past reset to park-wait/null (resume.mjs re-checks).
         active = false;
         core.timers.clear("reactive-check");
-        core.state.snapshots = snapshots; // /limitless resume derives its hold from the current readings
+        core.state.snapshots = snapshots; // /keepalive resume derives its hold from the current readings
         await core.park(verdict, { source: "poll" });
         return;
       } catch (error) {

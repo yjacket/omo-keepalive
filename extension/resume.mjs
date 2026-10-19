@@ -1,4 +1,4 @@
-// limitless feature module: plan todo 7 "Resume at reset for park-wait".
+// keepalive feature module: plan todo 7 "Resume at reset for park-wait".
 //
 // One timer ("resume") at most. A known future reset arms it at resetAt + resumeGraceMs. A park-wait whose
 // reset is null or already past arms a re-check at now + max(pollMinIntervalMs, 60 s) instead; the timer is
@@ -20,8 +20,8 @@ export function install(core) {
     const now = core.now();
     const known = Number.isFinite(core.state.resetAt) && core.state.resetAt > now;
     if (!known && core.state.source === "reactive") return clear();
-    const fakeDelay = Number(core.env.OMO_LIMITLESS_FAKE_RESET_IN_MS);
-    const dueAt = core.env.OMO_LIMITLESS_FAKE_RESET_IN_MS && Number.isFinite(fakeDelay)
+    const fakeDelay = Number(core.env.OMO_KEEPALIVE_FAKE_RESET_IN_MS);
+    const dueAt = core.env.OMO_KEEPALIVE_FAKE_RESET_IN_MS && Number.isFinite(fakeDelay)
       ? now + fakeDelay
       : known ? core.state.resetAt + core.config.resumeGraceMs : null;
     if (dueAt !== null && dueAt > now) {

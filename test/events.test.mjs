@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import * as nodeFs from "node:fs";
 import test from "node:test";
-import { startLimitless } from "../extension/limitless.mjs";
+import { startKeepalive } from "../extension/keepalive.mjs";
 import { install } from "../extension/events.mjs";
 import { createHarness } from "./harness.mjs";
 
@@ -27,12 +27,12 @@ function snapshot(utilization, resetAt) {
 test("publishes each park-state transition and persists parkState", async (t) => {
   const h = createHarness({
     model: { provider: "anthropic", api: "claude-sdk-oauth" },
-    env: { OMO_LIMITLESS_AUTH_PATH: "unused" },
+    env: { OMO_KEEPALIVE_AUTH_PATH: "unused" },
     now: 1000,
   });
   t.after(() => h.cleanup());
   let usage = snapshot(95, 2000);
-  const core = startLimitless(h.pi, h.deps({
+  const core = startKeepalive(h.pi, h.deps({
     fs: {
       readFileSync(path) {
         if (String(path).endsWith("unused")) return JSON.stringify({
@@ -53,11 +53,11 @@ test("publishes each park-state transition and persists parkState", async (t) =>
   await h.clock.tick(60000);
   await h.fire("turn_end", { type: "turn_end" });
 
-  assert.deepEqual(h.eventsEmitted.filter((e) => e.name === "limitless:park").map((e) => e.payload), [
+  assert.deepEqual(h.eventsEmitted.filter((e) => e.name === "keepalive:park").map((e) => e.payload), [
     { sessionId: "s1", state: "park-wait", resetAt: 2000 },
     { sessionId: "s1", state: "ok", resetAt: null },
   ]);
-  assert.equal(h.readHomeJson(".omo/limitless/state/s1.json").parkState, "ok");
+  assert.equal(h.readHomeJson(".omo/keepalive/state/s1.json").parkState, "ok");
   assert.equal(core.state.parkState, "ok");
 });
 

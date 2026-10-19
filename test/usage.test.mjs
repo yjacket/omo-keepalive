@@ -19,7 +19,7 @@ test("maps Claude response and sends the expected endpoint headers", async () =>
   const body = await fixture("claude");
   const requests = [];
   const result = await readUsage({ provider: "anthropic-subscription", account: "work" }, {
-    env: { OMO_LIMITLESS_AUTH_PATH: "/auth.json" },
+    env: { OMO_KEEPALIVE_AUTH_PATH: "/auth.json" },
     fs: baseFs({ "/auth.json": JSON.stringify({ "anthropic-subscription": { access: "wrong", accounts: [{ name: "work", access: "account-token" }] } }) }),
     fetch: async (url, options) => {
       requests.push({ url, options });
@@ -46,7 +46,7 @@ test("maps Claude response and sends the expected endpoint headers", async () =>
 test("profile identity request does not pass the account name as account ID", async () => {
   const requests = [];
   await readUsage({ provider: "anthropic-subscription", account: "work" }, {
-    env: { OMO_LIMITLESS_AUTH_PATH: "/identity-auth" },
+    env: { OMO_KEEPALIVE_AUTH_PATH: "/identity-auth" },
     fs: baseFs({ "/identity-auth": JSON.stringify({ "anthropic-subscription": { accounts: [{ name: "work", access: "token" }] } }) }),
     fetch: async (url, options) => {
       requests.push({ url, options });
@@ -61,7 +61,7 @@ test("profile identity request does not pass the account name as account ID", as
 
 test("maps Codex weekly window and tolerates null secondary", async () => {
   const result = await readUsage({ provider: "chatgpt-subscription", account: "default" }, {
-    env: { OMO_LIMITLESS_AUTH_PATH: "/auth.json" },
+    env: { OMO_KEEPALIVE_AUTH_PATH: "/auth.json" },
     fs: baseFs({ "/auth.json": JSON.stringify({ "chatgpt-subscription": { access: "codex-token", accountId: "acct" } }) }),
     fetch: async (_url, options) => {
       assert.equal(options.headers.Authorization, "Bearer codex-token");
@@ -88,7 +88,7 @@ test("401 uses Claude Code only for a matching account UUID", async () => {
     },
   };
   const result = await readUsage({ provider: "anthropic-subscription", account: "default" }, {
-    env: { OMO_LIMITLESS_AUTH_PATH: "/auth.json" }, homeDir: "/home", fs,
+    env: { OMO_KEEPALIVE_AUTH_PATH: "/auth.json" }, homeDir: "/home", fs,
     fetch: async (_url, options) => {
       calls++;
       if (calls === 1) return jsonResponse({}, 401);
@@ -110,7 +110,7 @@ test("401 uses Claude Code only for a matching account UUID", async () => {
 test("401 falls through Claude Code, CodexBar, then none", async () => {
   let spawnCount = 0;
   const first = await readUsage({ provider: "anthropic-subscription", account: "default" }, {
-    env: { OMO_LIMITLESS_AUTH_PATH: "/auth-1" },
+    env: { OMO_KEEPALIVE_AUTH_PATH: "/auth-1" },
     fs: baseFs({ "/auth-1": JSON.stringify({ "anthropic-subscription": { access: "token" } }) }),
     fetch: async () => jsonResponse({}, 401),
     spawn: () => { spawnCount++; throw new Error("CodexBar unavailable"); },
@@ -120,7 +120,7 @@ test("401 falls through Claude Code, CodexBar, then none", async () => {
   assert.equal(spawnCount, process.platform === "win32" ? 2 : 1);
 
   const claudeFallback = await readUsage({ provider: "anthropic-subscription", account: "default" }, {
-    env: { OMO_LIMITLESS_AUTH_PATH: "/auth-claude-chain" },
+    env: { OMO_KEEPALIVE_AUTH_PATH: "/auth-claude-chain" },
     homeDir: "/home", fs: {
       readFile: async (path) => {
         if (path === "/auth-claude-chain") return JSON.stringify({ "anthropic-subscription": { accounts: [{ name: "default", access: "senpi" }] } });
@@ -138,7 +138,7 @@ test("401 falls through Claude Code, CodexBar, then none", async () => {
   assert.equal(claudeFallback.source, "none");
 
   const codex = await readUsage({ provider: "chatgpt-subscription", account: "default" }, {
-    env: { OMO_LIMITLESS_AUTH_PATH: "/auth-2" },
+    env: { OMO_KEEPALIVE_AUTH_PATH: "/auth-2" },
     fs: baseFs({ "/auth-2": JSON.stringify({ "chatgpt-subscription": { access: "token", accountId: "id" } }) }),
     fetch: async () => jsonResponse({}, 401),
     spawn: () => { throw new Error("CodexBar unavailable"); },
@@ -150,7 +150,7 @@ test("401 falls through Claude Code, CodexBar, then none", async () => {
 test("expired credentials skip the endpoint and use the fallback chain", async () => {
   let fetchCalls = 0;
   const result = await readUsage({ provider: "chatgpt-subscription", account: "default" }, {
-    env: { OMO_LIMITLESS_AUTH_PATH: "/auth-expired" },
+    env: { OMO_KEEPALIVE_AUTH_PATH: "/auth-expired" },
     fs: baseFs({ "/auth-expired": JSON.stringify({ "chatgpt-subscription": { access: "expired", accountId: "id", expires: 1 } }) }),
     fetch: async () => { fetchCalls++; throw new Error("expired token must not be sent"); },
     spawn: () => { throw new Error("CodexBar unavailable"); },
@@ -164,7 +164,7 @@ test("expired credentials skip the endpoint and use the fallback chain", async (
 test("CodexBar successful output is identified as its source", async () => {
   const body = await fixture("codex");
   const result = await readUsage({ provider: "chatgpt-subscription", account: "default" }, {
-    env: { OMO_LIMITLESS_AUTH_PATH: "/auth-codexbar" },
+    env: { OMO_KEEPALIVE_AUTH_PATH: "/auth-codexbar" },
     fs: baseFs({ "/auth-codexbar": JSON.stringify({ "chatgpt-subscription": { access: "t", accountId: "id" } }) }),
     fetch: async () => jsonResponse({}, 401),
     spawn: (command, args, options) => {
@@ -190,7 +190,7 @@ test("CodexBar resolves the Windows shim after a missing extensionless command",
   const commands = [];
   const result = await readUsage({ provider: "chatgpt-subscription", account: "default" }, {
     platform: "win32",
-    env: { OMO_LIMITLESS_AUTH_PATH: "/auth-codexbar-windows", ComSpec: "C:\\Windows\\System32\\cmd.exe" },
+    env: { OMO_KEEPALIVE_AUTH_PATH: "/auth-codexbar-windows", ComSpec: "C:\\Windows\\System32\\cmd.exe" },
     fs: baseFs({ "/auth-codexbar-windows": JSON.stringify({ "chatgpt-subscription": { access: "t", accountId: "id" } }) }),
     fetch: async () => jsonResponse({}, 401),
     resolveCommand: (command) => `C:\\bin\\${command}`,
@@ -219,7 +219,7 @@ test("CodexBar quotes Windows shim paths containing spaces", async () => {
   const body = await fixture("codex");
   const result = await readUsage({ provider: "chatgpt-subscription", account: "default" }, {
     platform: "win32",
-    env: { OMO_LIMITLESS_AUTH_PATH: "/auth-codexbar-space", ComSpec: "C:\\Windows\\System32\\cmd.exe" },
+    env: { OMO_KEEPALIVE_AUTH_PATH: "/auth-codexbar-space", ComSpec: "C:\\Windows\\System32\\cmd.exe" },
     fs: baseFs({ "/auth-codexbar-space": JSON.stringify({ "chatgpt-subscription": { access: "t", accountId: "id" } }) }),
     fetch: async () => jsonResponse({}, 401),
     resolveCommand: () => "C:\\tmp\\cv5 probe sp\\codexbar-cli.cmd",
@@ -245,7 +245,7 @@ test("CodexBar quotes Windows shim paths containing spaces", async () => {
 test("CodexBar timeout kills the child process", async () => {
   let killed = false;
   const result = await readUsage({ provider: "chatgpt-subscription", account: "default" }, {
-    env: { OMO_LIMITLESS_AUTH_PATH: "/auth-codexbar-timeout" },
+    env: { OMO_KEEPALIVE_AUTH_PATH: "/auth-codexbar-timeout" },
     fs: baseFs({ "/auth-codexbar-timeout": JSON.stringify({ "chatgpt-subscription": { access: "t", accountId: "id" } }) }),
     fetch: async () => jsonResponse({}, 401),
     spawn: () => {
@@ -269,7 +269,7 @@ test("CodexBar timeout kills the child process", async () => {
 test("malformed successful body and string utilization do not fabricate endpoint data", async () => {
   for (const body of [{ error: "temporarily unavailable" }, { five_hour: { utilization: "95", resets_at: 1791354600000 } }]) {
     const result = await readUsage({ provider: "anthropic-subscription", account: `bad-${JSON.stringify(body)}` }, {
-      env: { OMO_LIMITLESS_AUTH_PATH: "/auth-bad" },
+      env: { OMO_KEEPALIVE_AUTH_PATH: "/auth-bad" },
       fs: baseFs({ "/auth-bad": JSON.stringify({ "anthropic-subscription": { access: "t" } }) }),
       fetch: async () => jsonResponse(body),
       now: () => Date.now() + 700000,
@@ -290,7 +290,7 @@ test("credential paths are only read and never written", async () => {
     writeFile: async (...args) => { touched.push(["write", ...args]); },
   };
   await readUsage({ provider: "anthropic-subscription", account: "default" }, {
-    env: { OMO_LIMITLESS_AUTH_PATH: "/auth-no-write" }, homeDir: "/home", fs,
+    env: { OMO_KEEPALIVE_AUTH_PATH: "/auth-no-write" }, homeDir: "/home", fs,
     fetch: async () => jsonResponse({}, 401),
     spawn: () => { throw new Error("CodexBar unavailable"); },
     now: () => Date.now() + 800000,
@@ -303,7 +303,7 @@ test("fake file returns data without fetching; missing file returns none", async
   const payload = { "anthropic-subscription": { five_hour: { utilization: 95, resetAt: 1791354600000 }, overageEnabled: false } };
   let calls = 0;
   const deps = {
-    env: { OMO_LIMITLESS_FAKE_USAGE_FILE: "/fake.json" },
+    env: { OMO_KEEPALIVE_FAKE_USAGE_FILE: "/fake.json" },
     fs: baseFs({ "/fake.json": JSON.stringify(payload) }),
     fetch: async () => { calls++; throw new Error("network called"); },
     now: () => 1,
@@ -321,7 +321,7 @@ test("a hung endpoint is aborted at ten seconds and never throws", async () => {
   let timeoutMs;
   let fetchCalled = false;
   const result = await readUsage({ provider: "anthropic-subscription", account: "hung" }, {
-    env: { OMO_LIMITLESS_AUTH_PATH: "/auth-hung" },
+    env: { OMO_KEEPALIVE_AUTH_PATH: "/auth-hung" },
     fs: baseFs({ "/auth-hung": JSON.stringify({ "anthropic-subscription": { accounts: [{ name: "hung", access: "t" }] } }) }),
     setTimeout: (callback, ms) => { timeoutMs = ms; callback(); return 1; },
     clearTimeout: () => {},

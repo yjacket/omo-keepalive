@@ -98,11 +98,11 @@ function resolveAccounts(provider, authJson) {
  */
 export function readAuthJson({ env, homeDir, fs }) {
   try {
-    // Determine path: OMO_LIMITLESS_AUTH_PATH or <homeDir>/.omo/agent/auth.json
+    // Determine path: OMO_KEEPALIVE_AUTH_PATH or <homeDir>/.omo/agent/auth.json
     let authPath;
     if (typeof env === 'object' && env !== null) {
       // env is an object (for testing)
-      const envPath = env['OMO_LIMITLESS_AUTH_PATH'];
+      const envPath = env['OMO_KEEPALIVE_AUTH_PATH'];
       authPath = envPath || join(homeDir, '.omo', 'agent', 'auth.json');
     } else {
       authPath = join(homeDir, '.omo', 'agent', 'auth.json');

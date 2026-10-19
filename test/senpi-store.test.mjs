@@ -5,7 +5,7 @@ import { homedir, tmpdir } from "node:os";
 import { join } from "node:path";
 import { pathToFileURL } from "node:url";
 import { createHarness } from "./harness.mjs";
-import { startLimitless } from "../extension/limitless.mjs";
+import { startKeepalive } from "../extension/keepalive.mjs";
 import { createSenpiGoalStore, senpiDistCandidates } from "../extension/core.mjs";
 
 const T0 = Date.UTC(2026, 9, 7, 3, 0, 0);
@@ -13,10 +13,10 @@ const RESET = T0 + 2 * 3600000;
 const CLAUDE = { provider: "anthropic-subscription", api: "claude-sdk-oauth", id: "claude-fake" };
 const GOAL_REL = ["core", "extensions", "builtin", "goal"];
 
-const tmp = () => mkdtempSync(join(tmpdir(), "limitless-store-"));
+const tmp = () => mkdtempSync(join(tmpdir(), "keepalive-store-"));
 const norm = (p) => p.replaceAll("\\", "/");
 
-// A stand-in for <senpi>/dist/core/extensions/builtin/goal with the two modules limitless imports.
+// A stand-in for <senpi>/dist/core/extensions/builtin/goal with the two modules keepalive imports.
 function writeStubDist(dist) {
   const goal = join(dist, ...GOAL_REL);
   mkdirSync(goal, { recursive: true });
@@ -107,7 +107,7 @@ function parked({ goal } = {}) {
     provider: "anthropic-subscription", account: "default",
     windows: [{ kind: "five_hour", utilization: 95, resetAt: RESET }], overageEnabled: false, source: "endpoint",
   });
-  const core = startLimitless(h.pi, h.deps({ readUsage: reader }));
+  const core = startKeepalive(h.pi, h.deps({ readUsage: reader }));
   return { h, core };
 }
 
@@ -121,19 +121,19 @@ test("IS-1: a failed pause does not unblock spawns while the goal is active and 
     const turn = await h.runTurn({ tools: ["task", "task_create", "read"] });
     assert.deepEqual(turn.blocked.map((b) => b.toolName), ["task", "task_create"]);
     assert.deepEqual(turn.executed, ["read"]);
-    assert.match(turn.blocked[0].reason, /^limitless: usage limit/);
+    assert.match(turn.blocked[0].reason, /^keepalive: usage limit/);
   } finally { h.cleanup(); }
 });
 
-test("IS-1: an unreadable goal store still blocks spawns once limitless owns a pause, and allows them when it owns none", async () => {
+test("IS-1: an unreadable goal store still blocks spawns once keepalive owns a pause, and allows them when it owns none", async () => {
   const { h, core } = parked({ goal: { id: "g1", status: "active", objective: "work" } });
   try {
     await h.fire("session_start", { type: "session_start", reason: "startup" });
-    assert.equal(core.state.pausedByLimitless, "g1");
+    assert.equal(core.state.pausedByKeepalive, "g1");
     h.goalStore.read = async () => { throw new Error("senpi goal store unavailable"); };
     const owned = await h.runTurn({ tools: ["task"] });
     assert.deepEqual(owned.blocked.map((b) => b.toolName), ["task"]);
-    core.state.pausedByLimitless = null;
+    core.state.pausedByKeepalive = null;
     const unowned = await h.runTurn({ tools: ["task"] });
     assert.deepEqual(unowned.executed, ["task"]);
     assert.equal(core.state.lastError.where, "goal-read");

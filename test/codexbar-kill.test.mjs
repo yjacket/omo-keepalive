@@ -9,7 +9,7 @@ test("the codexbar fallback's taskkill on a hung child is bounded by a timeout",
   const seen = [];
   const result = await readUsage({ provider: "chatgpt-subscription", account: "default" }, {
     platform: "win32",
-    env: { OMO_LIMITLESS_AUTH_PATH: "/a" },
+    env: { OMO_KEEPALIVE_AUTH_PATH: "/a" },
     fs: { readFile: async (p) => { if (p !== "/a") throw new Error("ENOENT"); return JSON.stringify({ "chatgpt-subscription": { access: "t", accountId: "id" } }); } },
     fetch: async () => ({ status: 401, text: async () => "{}" }),
     spawn: () => { const c = new EventEmitter(); c.pid = 4242; c.kill = () => {}; c.stdout = new PassThrough(); return c; },

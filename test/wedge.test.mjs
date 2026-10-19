@@ -1,10 +1,10 @@
-// Live-QA regressions: (1) a park released at the end of a warm turn wedged the session in "Working";
+// Live-QA regressions: (1) a park released at the end of an automatic run wedged the session in "Working";
 // (2) the "goal is held until the reset" notice was overwritten on screen. Real core + harness, handlers run
 // sequentially in senpi's event order (turn_end, agent_end, agent_settled).
 import test from "node:test";
 import assert from "node:assert/strict";
 import { createHarness, GOAL_CONTINUATION_TEXT } from "./harness.mjs";
-import { startLimitless } from "../extension/limitless.mjs";
+import { startKeepalive } from "../extension/keepalive.mjs";
 import { hhmm } from "../extension/core.mjs";
 
 const T0 = Date.UTC(2026, 9, 7, 3, 0, 0);
@@ -18,23 +18,23 @@ const start = { type: "session_start", reason: "startup" };
 
 function setup({ goal = GOAL, branch = PRIOR_TURN } = {}) {
   let util = 95;
-  const h = createHarness({ model: CLAUDE, branch, goal, now: T0, env: { OMO_LIMITLESS_WARM_INTERVAL_MS: String(WARM_MS) } });
+  const h = createHarness({ model: CLAUDE, branch, goal, now: T0, env: { OMO_KEEPALIVE_WARM_INTERVAL_MS: String(WARM_MS) } });
   h.writeHomeJson(".omo/agent/auth.json", { "anthropic-subscription": { access: "not-a-real-token" } });
   const readUsage = async () => ({
     provider: "anthropic-subscription", account: "default",
     windows: [{ kind: "five_hour", utilization: util, resetAt: RESET }], overageEnabled: false, source: "endpoint",
   });
-  const core = startLimitless(h.pi, h.deps({ readUsage }));
+  const core = startKeepalive(h.pi, h.deps({ readUsage }));
   h.installFakeGoalExtension();
   return { h, core, setUtil: (value) => { util = value; } };
 }
 
-// The agent starts the queued warm turn the way senpi does and leaves the run busy (idle=false).
-async function beginWarmTurn(h) {
+// An automatic run while parked (a monitor or notification turn), started the way senpi starts an extension run
+// and left busy (idle=false). Warming itself never starts a run: keepwarm pings outside the conversation.
+async function beginAutomatedTurn(h) {
   await h.clock.tick(WARM_MS);
-  const [warm] = h.queuedTurns.splice(0);
-  assert.ok(warm, "the warm timer queued a warm turn");
-  await h.fire("before_agent_start", { type: "before_agent_start", trigger: warm.trigger, prompt: warm.prompt, systemPrompt: "", systemPromptOptions: {} });
+  assert.deepEqual(h.queuedTurns.splice(0), [], "keepalive queues no turn of its own while waiting");
+  await h.fire("before_agent_start", { type: "before_agent_start", trigger: "extension", prompt: "monitor event", systemPrompt: "", systemPromptOptions: {} });
   h.setIdle(false);
 }
 
@@ -44,12 +44,12 @@ const endRun = async (h) => {
   await h.fire("agent_settled", { type: "agent_settled" });
 };
 
-test("release at the turn_end of a warm turn queues no message and restarts the goal once at agent_settled", async () => {
+test("release at the turn_end of an automatic run queues no message and restarts the goal once at agent_settled", async () => {
   const { h, core, setUtil } = setup();
   try {
     await h.fire("session_start", start);
     assert.equal(h.goalStore.goal.status, "paused");
-    await beginWarmTurn(h);
+    await beginAutomatedTurn(h);
     setUtil(10);
     h.clock.advance(61000);
     await h.fire("turn_end", { type: "turn_end", turnIndex: 0, message: { role: "assistant", content: [] }, toolResults: [] });
@@ -71,11 +71,11 @@ test("release at the turn_end of a warm turn queues no message and restarts the 
   } finally { h.cleanup(); }
 });
 
-test("reset landing between agent_end and agent_settled of a warm turn restarts the goal once", async () => {
+test("reset landing between agent_end and agent_settled of an automatic run restarts the goal once", async () => {
   const { h, core, setUtil } = setup();
   try {
     await h.fire("session_start", start);
-    await beginWarmTurn(h);
+    await beginAutomatedTurn(h);
     await h.fire("turn_end", { type: "turn_end", turnIndex: 0, message: { role: "assistant", content: [] }, toolResults: [] });
     await h.fire("agent_end", { type: "agent_end", messages: [] });
     setUtil(10);
@@ -95,7 +95,7 @@ test("reset landing after agent_settled restarts the goal immediately and a late
   const { h, core, setUtil } = setup();
   try {
     await h.fire("session_start", start);
-    await beginWarmTurn(h);
+    await beginAutomatedTurn(h);
     await h.fire("turn_end", { type: "turn_end", turnIndex: 0, message: { role: "assistant", content: [] }, toolResults: [] });
     await endRun(h);
     setUtil(10);
@@ -112,7 +112,7 @@ test("a run that starts before agent_settled owns the restart: no extra goal_sto
   const { h, core, setUtil } = setup();
   try {
     await h.fire("session_start", start);
-    await beginWarmTurn(h);
+    await beginAutomatedTurn(h);
     setUtil(10);
     h.clock.advance(61000);
     await h.fire("turn_end", { type: "turn_end", turnIndex: 0, message: { role: "assistant", content: [] }, toolResults: [] });
@@ -130,7 +130,7 @@ test("a release that is re-parked before agent_settled does not restart the goal
   const { h, core, setUtil } = setup();
   try {
     await h.fire("session_start", start);
-    await beginWarmTurn(h);
+    await beginAutomatedTurn(h);
     setUtil(10);
     h.clock.advance(61000);
     await h.fire("turn_end", { type: "turn_end", turnIndex: 0, message: { role: "assistant", content: [] }, toolResults: [] });
@@ -146,7 +146,7 @@ test("a release that is re-parked before agent_settled does not restart the goal
   } finally { h.cleanup(); }
 });
 
-const HELD = `goal은 ${hhmm(RESET)} 리셋 뒤 시작합니다. 지금 돌리려면 /limitless resume`;
+const HELD = `goal은 ${hhmm(RESET)} 리셋 뒤 시작합니다. 지금 돌리려면 /keepalive resume`;
 
 test("a goal paused by a park refresh after the episode notice was spent still announces it, once, in the notice widget", async () => {
   const { h, core } = setup({ goal: null });
@@ -196,7 +196,7 @@ test("the first park carries the goal in its own episode notice and posts no sec
 
 const turnEnd = (h) => h.fire("turn_end", { type: "turn_end", turnIndex: 0, message: { role: "assistant", content: [] }, toolResults: [] });
 
-test("notices never steer: nothing but the warm turn is ever sent as a conversation message", async () => {
+test("notices never steer and waiting sends no conversation message", async () => {
   for (const idle of [true, false]) {
     const { h } = setup({ goal: null });
     try {
@@ -212,13 +212,10 @@ test("notices never steer: nothing but the warm turn is ever sent as a conversat
   const { h } = setup();
   try {
     await h.fire("session_start", start);
-    await beginWarmTurn(h);
+    await h.clock.tick(WARM_MS * 3);
     assert.match(h.notice(), /goal을 멈췄고/);
-    assert.ok(h.sentMessages.length > 0);
-    for (const { msg, opts } of h.sentMessages) {
-      assert.equal(msg.customType, "limitless-warm");
-      assert.equal(opts?.triggerTurn, true);
-    }
+    assert.deepEqual(h.sentMessages, [], "warming sends nothing into the conversation");
+    assert.deepEqual(h.queuedTurns, []);
   } finally { h.cleanup(); }
 });
 
@@ -226,7 +223,7 @@ test("an automatic continuation (agent_start without before_agent_start) owns th
   const { h, core, setUtil } = setup();
   try {
     await h.fire("session_start", start);
-    await beginWarmTurn(h);
+    await beginAutomatedTurn(h);
     setUtil(10);
     h.clock.advance(61000);
     await turnEnd(h);
@@ -244,7 +241,7 @@ test("a session reset drops the pending restart kick", async () => {
   const { h, core, setUtil } = setup();
   try {
     await h.fire("session_start", start);
-    await beginWarmTurn(h);
+    await beginAutomatedTurn(h);
     setUtil(10);
     h.clock.advance(61000);
     await turnEnd(h);

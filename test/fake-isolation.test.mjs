@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import { existsSync, readdirSync } from "node:fs";
 import { join } from "node:path";
 import { createHarness } from "./harness.mjs";
-import { startLimitless } from "../extension/limitless.mjs";
+import { startKeepalive } from "../extension/keepalive.mjs";
 import { writeSharedSnapshot } from "../extension/state.mjs";
 
 const T0 = Date.UTC(2026, 9, 7, 3, 0, 0);
@@ -20,10 +20,10 @@ function fakeSession(util, homeDir) {
   const h = createHarness({ model: CLAUDE, now: T0, goal: GOAL, branch: PRIOR_TURN, homeDir });
   h.writeHomeJson(".omo/agent/auth.json", { "anthropic-subscription": { access: "not-a-real-token" } });
   const file = h.writeHomeJson("usage.json", { "anthropic-subscription": { five_hour: { utilization: util, resetAt: RESET }, seven_day: { utilization: 10, resetAt: RESET + 86400000 } } });
-  const core = startLimitless(h.pi, h.deps({ env: { OMO_LIMITLESS_FAKE_USAGE_FILE: file }, fetch: undefined }));
+  const core = startKeepalive(h.pi, h.deps({ env: { OMO_KEEPALIVE_FAKE_USAGE_FILE: file }, fetch: undefined }));
   return { h, core };
 }
-const usageDir = (h) => join(h.tmpHome, ".omo", "limitless", "usage");
+const usageDir = (h) => join(h.tmpHome, ".omo", "keepalive", "usage");
 const usageFiles = (h) => (existsSync(usageDir(h)) ? readdirSync(usageDir(h)) : []);
 
 test("fake-source session polls without creating any shared usage snapshot", async () => {
@@ -60,7 +60,7 @@ test("a real session without the fake env is unaffected by an earlier fake sessi
     const calls = [];
     try {
       b.writeHomeJson(".omo/agent/auth.json", { "anthropic-subscription": { access: "not-a-real-token" } });
-      const coreB = startLimitless(b.pi, b.deps({ readUsage: async (r) => { calls.push(r); return snap(10); } }));
+      const coreB = startKeepalive(b.pi, b.deps({ readUsage: async (r) => { calls.push(r); return snap(10); } }));
       await b.fire("session_start", { type: "session_start", reason: "startup" });
       assert.equal(calls.length, 1);
       assert.equal(coreB.isParked(), false);

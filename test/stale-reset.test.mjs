@@ -1,7 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { createHarness } from "./harness.mjs";
-import { startLimitless } from "../extension/limitless.mjs";
+import { startKeepalive } from "../extension/keepalive.mjs";
 
 // A timer callback that is already running when its session is reset (session_shutdown, or /new and /resume in one
 // process) must apply nothing to the next session's state - or to a dead session after a shutdown.
@@ -32,7 +32,7 @@ function session({ env } = {}) {
     if (state.gate) { state.entered.resolve(); await state.gate.promise; }
     return snapshot;
   };
-  const core = startLimitless(h.pi, h.deps({ readUsage }));
+  const core = startKeepalive(h.pi, h.deps({ readUsage }));
   const armed = () => TIMERS.filter((name) => core.timers.has(name));
   return { h, core, state, armed, setSid: (value) => { sid = value; } };
 }
@@ -115,7 +115,7 @@ test("a reactive re-check in flight across a shutdown does not re-park the dead 
     provider: "anthropic-subscription", account: "default", source: "endpoint",
     windows: [{ kind: "five_hour", utilization: 95, resetAt: T0 + 3600000 }],
   });
-  const core = startLimitless(h.pi, h.deps({ readUsage: async () => {
+  const core = startKeepalive(h.pi, h.deps({ readUsage: async () => {
     if (gated) { entered.resolve(); await gate.promise; }
     return over();
   } }));

@@ -225,7 +225,7 @@ test('readAuthJson - env as object', () => {
   const authJson = { test: 'data' };
 
   const result = readAuthJson({
-    env: { 'OMO_LIMITLESS_AUTH_PATH': '/custom/auth.json' },
+    env: { 'OMO_KEEPALIVE_AUTH_PATH': '/custom/auth.json' },
     homeDir: '/home/user',
     fs: {
       readFileSync: (path) => {

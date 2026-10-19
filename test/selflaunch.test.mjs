@@ -20,7 +20,7 @@ function make({ wt = "C:\\Users\\u\\AppData\\Local\\Microsoft\\WindowsApps\\wt.e
   const calls = [];
   const runPowerShell = async (req) => {
     calls.push(req);
-    return reply ? reply(req) : ok(`LIMITLESS-REGISTERED ${selfTaskOf(SID)}\r\n`);
+    return reply ? reply(req) : ok(`KEEPALIVE-REGISTERED ${selfTaskOf(SID)}\r\n`);
   };
   const sl = createSelfLaunch({ runPowerShell, findExe: () => wt, now: () => NOW, platform, env: { ComSpec: "C:\\Windows\\System32\\cmd.exe" } });
   return { sl, calls };
@@ -29,26 +29,26 @@ function make({ wt = "C:\\Users\\u\\AppData\\Local\\Microsoft\\WindowsApps\\wt.e
 test("wt.exe case: exact static script, values only in env, selfTask returned", async () => {
   const { sl, calls } = make();
   const res = await sl.register({ sessionId: SID, cwd: tmp, at: AT });
-  assert.deepEqual(res, { ok: true, selfTask: `\\omo-limitless\\omo-limitless-resume-${SID.slice(0, 8)}` });
+  assert.deepEqual(res, { ok: true, selfTask: `\\omo-keepalive\\omo-keepalive-resume-${SID.slice(0, 8)}` });
   assert.equal(calls.length, 1);
   assert.equal(calls[0].script, REGISTER_SCRIPT);
-  assert.match(REGISTER_SCRIPT, /Register-ScheduledTask -TaskName \$name -TaskPath '\\omo-limitless\\' -Trigger \$trigger -Action \$action -Settings \$settings -Force/);
+  assert.match(REGISTER_SCRIPT, /Register-ScheduledTask -TaskName \$name -TaskPath '\\omo-keepalive\\' -Trigger \$trigger -Action \$action -Settings \$settings -Force/);
   assert.match(REGISTER_SCRIPT, /New-ScheduledTaskTrigger -Once -At \$at/);
   assert.match(REGISTER_SCRIPT, /New-ScheduledTaskSettingsSet -StartWhenAvailable/);
-  assert.match(REGISTER_SCRIPT, /@\('-d', \(\$q \+ \$env:OMO_LL_CWD \+ \$q\)\) \+ \$l \+ @\('--session', \$env:OMO_LL_SID\)/);
+  assert.match(REGISTER_SCRIPT, /@\('-d', \(\$q \+ \$env:OMO_KA_CWD \+ \$q\)\) \+ \$l \+ @\('--session', \$env:OMO_KA_SID\)/);
   assert.doesNotMatch(REGISTER_SCRIPT, /-RunLevel|-Principal|-User|-Daily|-Weekly|-Repetition|"/);
   assert.deepEqual(calls[0].env, {
-    OMO_LL_TASK: taskName(SID), OMO_LL_SID: SID, OMO_LL_CWD: tmp, OMO_LL_EXE: "C:\\Users\\u\\AppData\\Local\\Microsoft\\WindowsApps\\wt.exe",
-    OMO_LL_KIND: "wt", OMO_LL_LAUNCH: "omo", OMO_LL_AT: isoLocal(AT),
+    OMO_KA_TASK: taskName(SID), OMO_KA_SID: SID, OMO_KA_CWD: tmp, OMO_KA_EXE: "C:\\Users\\u\\AppData\\Local\\Microsoft\\WindowsApps\\wt.exe",
+    OMO_KA_KIND: "wt", OMO_KA_LAUNCH: "omo", OMO_KA_AT: isoLocal(AT),
   });
 });
 
 test("cmd.exe case when wt.exe is absent", async () => {
   const { sl, calls } = make({ wt: null });
   assert.equal((await sl.register({ sessionId: SID, cwd: tmp, at: AT })).ok, true);
-  assert.equal(calls[0].env.OMO_LL_KIND, "cmd");
-  assert.equal(calls[0].env.OMO_LL_EXE, "C:\\Windows\\System32\\cmd.exe");
-  assert.match(REGISTER_SCRIPT, /@\('\/c', 'start', \(\$q \+ 'limitless' \+ \$q\), '\/D', \(\$q \+ \$env:OMO_LL_CWD \+ \$q\)\) \+ \$l \+ @\('--session', \$env:OMO_LL_SID\)/);
+  assert.equal(calls[0].env.OMO_KA_KIND, "cmd");
+  assert.equal(calls[0].env.OMO_KA_EXE, "C:\\Windows\\System32\\cmd.exe");
+  assert.match(REGISTER_SCRIPT, /@\('\/c', 'start', \(\$q \+ 'keepalive' \+ \$q\), '\/D', \(\$q \+ \$env:OMO_KA_CWD \+ \$q\)\) \+ \$l \+ @\('--session', \$env:OMO_KA_SID\)/);
 });
 
 test("cwd with ';' never reaches wt.exe: cmd.exe action even though wt.exe exists", async () => {
@@ -56,9 +56,9 @@ test("cwd with ';' never reaches wt.exe: cmd.exe action even though wt.exe exist
   mkdirSync(dir, { recursive: true });
   const { sl, calls } = make();
   assert.equal((await sl.register({ sessionId: SID, cwd: dir, at: AT })).ok, true);
-  assert.equal(calls[0].env.OMO_LL_KIND, "cmd");
-  assert.equal(calls[0].env.OMO_LL_EXE, "C:\\Windows\\System32\\cmd.exe");
-  assert.equal(calls[0].env.OMO_LL_CWD, dir);
+  assert.equal(calls[0].env.OMO_KA_KIND, "cmd");
+  assert.equal(calls[0].env.OMO_KA_EXE, "C:\\Windows\\System32\\cmd.exe");
+  assert.equal(calls[0].env.OMO_KA_CWD, dir);
 });
 
 test("findOnPath (real detector) finds an entry whose stat fails but lstat works (WindowsApps alias)", () => {
@@ -80,7 +80,7 @@ test("trigger time is ISO local and never in the past", async () => {
   assert.match(isoLocal(AT), /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}$/);
   const { sl, calls } = make();
   await sl.register({ sessionId: SID, cwd: tmp, at: NOW - 1000 });
-  assert.equal(calls[0].env.OMO_LL_AT, isoLocal(NOW + 20000));
+  assert.equal(calls[0].env.OMO_KA_AT, isoLocal(NOW + 20000));
 });
 
 test("cwd with & and ; $() backtick is passed inertly through env, never into the script", async () => {
@@ -90,7 +90,7 @@ test("cwd with & and ; $() backtick is passed inertly through env, never into th
   assert.equal((await sl.register({ sessionId: SID, cwd: dir, at: AT })).ok, true);
   assert.equal(calls[0].script, REGISTER_SCRIPT);
   assert.equal(calls[0].script.includes("calc"), false);
-  assert.equal(calls[0].env.OMO_LL_CWD, dir);
+  assert.equal(calls[0].env.OMO_KA_CWD, dir);
 });
 
 test("invalid sid / cwd throw before any PowerShell call", async () => {
@@ -111,7 +111,7 @@ test("registration failures never claim success", async () => {
     () => ({ code: 1, stdout: "", stderr: "Access denied\n", timedOut: false }),
     () => ({ code: null, stdout: "", stderr: "", timedOut: true }),
     () => ok("some banner\r\n"), // exit 0 but no Get-ScheduledTask confirmation line
-    () => ok("LIMITLESS-REGISTERED \\omo-limitless\\other\r\n"),
+    () => ok("KEEPALIVE-REGISTERED \\omo-keepalive\\other\r\n"),
   ]) {
     const { sl } = make({ reply });
     const res = await sl.register({ sessionId: SID, cwd: tmp, at: AT });
@@ -127,17 +127,17 @@ test("non-Windows host: not ok, no PowerShell call", async () => {
 });
 
 test("unregister: static script, own task only, not-found is fine, failure reported", async () => {
-  const { sl, calls } = make({ reply: () => ok("LIMITLESS-UNREGISTERED\n") });
+  const { sl, calls } = make({ reply: () => ok("KEEPALIVE-UNREGISTERED\n") });
   assert.deepEqual(await sl.unregister({ sessionId: SID, selfTask: selfTaskOf(SID) }), { ok: true, gone: false });
   assert.equal(calls[0].script, UNREGISTER_SCRIPT);
-  assert.deepEqual(calls[0].env, { OMO_LL_TASK: taskName(SID) });
-  assert.match(UNREGISTER_SCRIPT, /Unregister-ScheduledTask -TaskName \$name -TaskPath '\\omo-limitless\\' -Confirm:\$false/);
-  const gone = make({ reply: () => ok("LIMITLESS-GONE\n") });
+  assert.deepEqual(calls[0].env, { OMO_KA_TASK: taskName(SID) });
+  assert.match(UNREGISTER_SCRIPT, /Unregister-ScheduledTask -TaskName \$name -TaskPath '\\omo-keepalive\\' -Confirm:\$false/);
+  const gone = make({ reply: () => ok("KEEPALIVE-GONE\n") });
   assert.deepEqual(await gone.sl.unregister({ sessionId: SID, selfTask: selfTaskOf(SID) }), { ok: true, gone: true });
-  const failed = make({ reply: () => ({ code: 3, stdout: "LIMITLESS-STILL-PRESENT\n", stderr: "", timedOut: false }) });
+  const failed = make({ reply: () => ({ code: 3, stdout: "KEEPALIVE-STILL-PRESENT\n", stderr: "", timedOut: false }) });
   assert.equal((await failed.sl.unregister({ sessionId: SID, selfTask: selfTaskOf(SID) })).ok, false);
   const other = make();
-  await assert.rejects(() => other.sl.unregister({ sessionId: SID, selfTask: "\\omo-limitless\\someone-else" }), /self-launch/);
+  await assert.rejects(() => other.sl.unregister({ sessionId: SID, selfTask: "\\omo-keepalive\\someone-else" }), /self-launch/);
   assert.equal(other.calls.length, 0);
 });
 
@@ -178,34 +178,34 @@ test("register passes the launcher through env: wt.exe and cmd.exe scheduled-tas
   const launcher = { exe: BUN, args: [OMO_JS] };
   const wt = make();
   await wt.sl.register({ sessionId: SID, cwd: tmp, at: AT, launcher });
-  assert.equal(wt.calls[0].env.OMO_LL_KIND, "wt");
-  assert.equal(wt.calls[0].env.OMO_LL_LAUNCH, [BUN, OMO_JS].join("\n"));
+  assert.equal(wt.calls[0].env.OMO_KA_KIND, "wt");
+  assert.equal(wt.calls[0].env.OMO_KA_LAUNCH, [BUN, OMO_JS].join("\n"));
   assert.equal(wt.calls[0].script, REGISTER_SCRIPT);
   const cmd = make({ wt: null });
   await cmd.sl.register({ sessionId: SID, cwd: tmp, at: AT, launcher });
-  assert.equal(cmd.calls[0].env.OMO_LL_KIND, "cmd");
-  assert.equal(cmd.calls[0].env.OMO_LL_LAUNCH, [BUN, OMO_JS].join("\n"));
+  assert.equal(cmd.calls[0].env.OMO_KA_KIND, "cmd");
+  assert.equal(cmd.calls[0].env.OMO_KA_LAUNCH, [BUN, OMO_JS].join("\n"));
   const semi = join(tmp, "se;mi");
   mkdirSync(semi, { recursive: true });
   const semiExe = join(semi, "omo.exe");
   writeFileSync(semiExe, "");
   const viaExe = make();
   await viaExe.sl.register({ sessionId: SID, cwd: tmp, at: AT, launcher: { exe: semiExe, args: [] } });
-  assert.equal(viaExe.calls[0].env.OMO_LL_KIND, "cmd");
+  assert.equal(viaExe.calls[0].env.OMO_KA_KIND, "cmd");
   const bad = make();
   await bad.sl.register({ sessionId: SID, cwd: tmp, at: AT, launcher: { exe: "C:\\x & calc.exe", args: [] } });
-  assert.equal(bad.calls[0].env.OMO_LL_LAUNCH, "omo");
+  assert.equal(bad.calls[0].env.OMO_KA_LAUNCH, "omo");
 });
 
 test("the static script builds the exact action argument for both branches (PowerShell evaluation)", { skip: process.platform !== "win32" }, async () => {
   const { execFileSync } = await import("node:child_process");
-  const body = REGISTER_SCRIPT.split("\n").filter((l) => /^\$q =|^\$l =|^if \(\$env:OMO_LL_KIND|^else \{ \$argv/.test(l)).join("\n");
+  const body = REGISTER_SCRIPT.split("\n").filter((l) => /^\$q =|^\$l =|^if \(\$env:OMO_KA_KIND|^else \{ \$argv/.test(l)).join("\n");
   for (const [kind, want] of [
     ["wt", `-d "C:\\w" "${BUN}" "${OMO_JS}" --session S1`],
-    ["cmd", `/c start "limitless" /D "C:\\w" "${BUN}" "${OMO_JS}" --session S1`],
+    ["cmd", `/c start "keepalive" /D "C:\\w" "${BUN}" "${OMO_JS}" --session S1`],
   ]) {
     const out = execFileSync("powershell.exe", ["-NoProfile", "-NonInteractive", "-Command", body + "\n[Console]::Out.Write($argv -join ' ')"], {
-      env: { ...process.env, OMO_LL_KIND: kind, OMO_LL_CWD: "C:\\w", OMO_LL_SID: "S1", OMO_LL_LAUNCH: [BUN, OMO_JS].join("\n") }, encoding: "utf8",
+      env: { ...process.env, OMO_KA_KIND: kind, OMO_KA_CWD: "C:\\w", OMO_KA_SID: "S1", OMO_KA_LAUNCH: [BUN, OMO_JS].join("\n") }, encoding: "utf8",
     });
     assert.equal(out, want);
   }
@@ -252,7 +252,7 @@ test("validLauncher: missing exe or missing arg0 file is rejected (existence gua
 test("register with an invalid launcher falls back to bare omo and reports launcherWarning", async () => {
   const bad = make();
   const res = await bad.sl.register({ sessionId: SID, cwd: tmp, at: AT, launcher: { exe: "C:\\x & calc.exe", args: [] } });
-  assert.equal(bad.calls[0].env.OMO_LL_LAUNCH, "omo");
+  assert.equal(bad.calls[0].env.OMO_KA_LAUNCH, "omo");
   assert.equal(res.ok, true);
   assert.match(res.launcherWarning, /invalid launcher/);
   const none = make();

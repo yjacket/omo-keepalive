@@ -1,7 +1,7 @@
-// limitless persistence (plan todo 5): per-session state and per-account shared usage snapshots.
+// keepalive persistence (plan todo 5): per-session state and per-account shared usage snapshots.
 //
-//   <home>/.omo/limitless/state/<sid>.json              session state (see core.mjs header for keys)
-//   <home>/.omo/limitless/usage/<provider>-<sha1>.json  {v:1, observedAt, snapshot} shared by all sessions
+//   <home>/.omo/keepalive/state/<sid>.json              session state (see core.mjs header for keys)
+//   <home>/.omo/keepalive/usage/<provider>-<sha1>.json  {v:1, observedAt, snapshot} shared by all sessions
 //
 // Every write is temp + rename. Every read treats a missing, unreadable, or malformed file as absent
 // and never throws. `fs` is a sync node:fs subset {readFileSync, writeFileSync, renameSync, mkdirSync, unlinkSync}.
@@ -12,8 +12,21 @@ import { dirname, join } from "node:path";
 let tempCounter = 0;
 const isRecord = (value) => value !== null && typeof value === "object" && !Array.isArray(value);
 
-export function limitlessDir(homeDir) {
-  return join(homeDir, ".omo", "limitless");
+export function keepaliveDir(homeDir) {
+  return join(homeDir, ".omo", "keepalive");
+}
+
+// Before the rename to keepalive the data lived in <home>/.omo/limitless. Moved once, only while <home>/.omo/keepalive does not exist yet.
+export function migrateLegacyDir(homeDir, fs = nodeFs) {
+  const from = join(homeDir, ".omo", "limitless");
+  const to = keepaliveDir(homeDir);
+  try {
+    if (fs.existsSync(to) || !fs.existsSync(from)) return null;
+    fs.renameSync(from, to);
+    return null;
+  } catch (error) {
+    return `${from} -> ${to}: ${error.message}`;
+  }
 }
 
 export function sanitizeId(id) {
@@ -21,12 +34,12 @@ export function sanitizeId(id) {
 }
 
 export function statePath(homeDir, sessionId) {
-  return join(limitlessDir(homeDir), "state", `${sanitizeId(sessionId)}.json`);
+  return join(keepaliveDir(homeDir), "state", `${sanitizeId(sessionId)}.json`);
 }
 
 export function snapshotPath(homeDir, provider, account) {
   const digest = createHash("sha1").update(String(account)).digest("hex");
-  return join(limitlessDir(homeDir), "usage", `${sanitizeId(provider)}-${digest}.json`);
+  return join(keepaliveDir(homeDir), "usage", `${sanitizeId(provider)}-${digest}.json`);
 }
 
 export function readJson(path, fs = nodeFs) {

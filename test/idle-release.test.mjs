@@ -1,14 +1,14 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { createHarness } from "./harness.mjs";
-import { startLimitless } from "../extension/limitless.mjs";
+import { startKeepalive } from "../extension/keepalive.mjs";
 
 const T0 = Date.UTC(2026, 9, 7, 3, 0, 0);
 const GOAL = { id: "g1", status: "active", objective: "work" };
 
 function setup(extra = {}) {
   const h = createHarness({ now: T0, goal: GOAL, ...extra });
-  const core = startLimitless(h.pi, h.deps());
+  const core = startKeepalive(h.pi, h.deps());
   return { h, core };
 }
 

@@ -5,6 +5,6 @@ export function install(core) {
       state: next.parkState,
       resetAt: next.resetAt,
     };
-    return core.pi.events?.emit?.("limitless:park", payload);
+    return core.pi.events?.emit?.("keepalive:park", payload);
   });
 }

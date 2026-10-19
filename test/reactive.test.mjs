@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { startLimitless } from "../extension/limitless.mjs";
+import { startKeepalive } from "../extension/keepalive.mjs";
 import { createHarness } from "./harness.mjs";
 
 const local = (year, month, day, hour, minute = 0) => new Date(year, month, day, hour, minute).getTime();
@@ -19,7 +19,7 @@ function setup({ env = {}, readUsage } = {}) {
   h.writeHomeJson(".omo/agent/auth.json", {
     "anthropic-subscription": { accounts: [{ name: "default", blockedUntil: null }] },
   });
-  const core = startLimitless(h.pi, h.deps({ readUsage }));
+  const core = startKeepalive(h.pi, h.deps({ readUsage }));
   return { h, core };
 }
 
@@ -105,7 +105,7 @@ test("unknown reset rechecks in 30 minutes and releases when usage is low", asyn
     assert.deepEqual(h.clock.pendingTimers(), [T0 + 30 * 60000]);
     await h.clock.tick(30 * 60000);
     assert.equal(core.isParked(), false);
-    assert.equal(h.statusLines.get("limitless"), "🔄");
+    assert.equal(h.statusLines.get("omo-keepalive"), "🔄");
   } finally { h.cleanup(); }
 });
 
@@ -243,7 +243,7 @@ test("non-limit assistant failure does not park", async () => {
 
 test("missing auth.json does not prevent the text recognizer from parking", async () => {
   const h = createHarness({ model: MODEL, now: T0 });
-  const core = startLimitless(h.pi, h.deps());
+  const core = startKeepalive(h.pi, h.deps());
   try {
     await h.fire("session_start", { type: "session_start" });
     await h.fire("message_end", FAILED("weekly limit resets 3:00pm"));
@@ -272,7 +272,7 @@ for (const [name, usage, ms] of [
   test("reactive release (" + name + ") restarts an owned goal once when idle", async () => {
     const { h, core } = await parkWithGoal({ readUsage: usage });
     try {
-      assert.equal(core.state.pausedByLimitless, "g1");
+      assert.equal(core.state.pausedByKeepalive, "g1");
       assert.equal(h.goalStore.goal.status, "paused");
       assert.equal(goalEmits(h), 0);
       await h.clock.tick(ms);
@@ -302,7 +302,7 @@ for (const [name, usage, ms] of [
   test("reactive release (" + name + ") leaves a non-owned (user-paused) goal alone", async () => {
     const { h, core } = await parkWithGoal({ readUsage: usage, goal: { id: "g1", status: "paused" } });
     try {
-      assert.equal(core.state.pausedByLimitless, null);
+      assert.equal(core.state.pausedByKeepalive, null);
       await h.clock.tick(ms);
       assert.equal(core.isParked(), false);
       assert.equal(h.goalStore.goal.status, "paused");
@@ -371,7 +371,7 @@ test("ROUND 5: 30-minute recheck at 95% with a PAST reset parks without a deadli
     assert.equal(seen.includes("park-exit"), false);
     assert.equal(h.shutdownCalls.length, 0);
     assert.deepEqual(h.clock.pendingTimers(), [checkAt + 60000]);
-    assert.equal(h.statusLines.get("limitless"), "⏸ 한도 대기 · 재개 시각 미정");
+    assert.equal(h.statusLines.get("omo-keepalive"), "⏸ 한도 대기 · 재개 시각 미정");
     usage = LOW;
     await h.clock.tick(60000);
     assert.equal(core.isParked(), false);

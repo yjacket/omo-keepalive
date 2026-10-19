@@ -1,9 +1,9 @@
 {
-  "name": "omo-limitless",
+  "name": "omo-keepalive",
   "type": "module",
   "pi": {
     "extensions": [
-      "extension/limitless.mjs"
+      "extension/keepalive.mjs"
     ]
   },
   "scripts": {

@@ -1,7 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { createHarness } from "./harness.mjs";
-import { startLimitless } from "../extension/limitless.mjs";
+import { startKeepalive } from "../extension/keepalive.mjs";
 
 const T0 = Date.UTC(2026, 9, 7, 3, 0, 0);
 const RESET = T0 + 2 * 3600000;
@@ -12,7 +12,7 @@ async function parkedSession() {
   let util = 95;
   const h = createHarness({ model: CLAUDE, now: T0, branch: PRIOR_TURN });
   h.writeHomeJson(".omo/agent/auth.json", { "anthropic-subscription": { access: "fake" } });
-  const core = startLimitless(h.pi, h.deps({ readUsage: async () => ({
+  const core = startKeepalive(h.pi, h.deps({ readUsage: async () => ({
     provider: "anthropic-subscription", account: "default", source: "endpoint", overageEnabled: false,
     windows: [{ kind: "five_hour", utilization: util, resetAt: RESET }],
   }) }));

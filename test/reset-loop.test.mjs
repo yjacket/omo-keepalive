@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { startLimitless } from "../extension/limitless.mjs";
+import { startKeepalive } from "../extension/keepalive.mjs";
 import { writeSharedSnapshot } from "../extension/state.mjs";
 import { createHarness } from "./harness.mjs";
 
@@ -18,7 +18,7 @@ function setup(resetOf) {
   const h = createHarness({ model: CLAUDE, branch: PRIOR_TURN, goal: GOAL, now: T0, env: {} });
   h.writeHomeJson(".omo/agent/auth.json", { "anthropic-subscription": { access: "fake" } });
   const polls = [];
-  const core = startLimitless(h.pi, h.deps({
+  const core = startKeepalive(h.pi, h.deps({
     readUsage: async () => {
       const at = h.clock.now();
       polls.push(at);
@@ -74,7 +74,7 @@ for (const [name, resetOf] of [["resetAt 1 min in the past", (at) => at - 60000]
       assert.equal(s.h.goalStore.goal.status, "active");
       assert.deepEqual(s.h.goalStore.setStatusCalls, ["paused", "active"]);
       assert.equal(s.h.eventsEmitted.filter((e) => e.name === "goal_store_changed").length, 1);
-      assert.equal(s.h.eventsEmitted.filter((e) => e.name === "limitless:park" && e.payload.state === "ok").length, 1);
+      assert.equal(s.h.eventsEmitted.filter((e) => e.name === "keepalive:park" && e.payload.state === "ok").length, 1);
       assert.deepEqual(s.h.sentUserMessages, []);
       assert.deepEqual(s.h.clock.pendingTimers(), []);
       assert.deepEqual(s.h.shutdownCalls, []);
@@ -87,7 +87,7 @@ test("a fresh shared snapshot whose reset already passed is bypassed for an endp
   h.writeHomeJson(".omo/agent/auth.json", { "anthropic-subscription": { access: "fake" } });
   writeSharedSnapshot({ homeDir: h.tmpHome, snapshot: snap(95, T0 - 60000), observedAt: T0 });
   let calls = 0;
-  const core = startLimitless(h.pi, h.deps({ readUsage: async () => { calls++; return snap(10, T0 + 3600000); } }));
+  const core = startKeepalive(h.pi, h.deps({ readUsage: async () => { calls++; return snap(10, T0 + 3600000); } }));
   try {
     await h.fire("session_start", { type: "session_start" });
     assert.equal(calls, 1);

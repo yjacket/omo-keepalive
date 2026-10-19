@@ -1,35 +1,50 @@
-# omo-limitless
+# omo-keepalive
 
 English | [한국어](README.ko.md)
 
 A Senpi/OMO extension that parks a goal-running OMO session when it hits a
-subscription usage limit, then resumes it at the reset time.
+subscription usage limit, then resumes it at the reset time. It also keeps the
+prompt cache warm while you are away and while a park waits, without adding
+anything to the conversation (formerly omo-keepwarm).
 
 ## Install
 
 ```sh
-omo install git:github.com/yjacket/omo-limitless
+omo install git:github.com/yjacket/omo-keepalive
 ```
 
-omo clones the repository into `~/.omo/agent/git/github.com/yjacket/omo-limitless` and adds it to `packages` in `~/.omo/agent/settings.json`. Type `/reload` in running sessions.
+omo clones the repository into `~/.omo/agent/git/github.com/yjacket/omo-keepalive` and adds it to `packages` in `~/.omo/agent/settings.json`. Type `/reload` in running sessions.
 
-**Update:** `omo update --extensions` (every installed package) or `omo update git:github.com/yjacket/omo-limitless`, then `/reload`.
+From a local checkout: `omo install C:/path/to/omo-keepalive`.
+
+**Update:** `omo update --extensions` (every installed package) or `omo update git:github.com/yjacket/omo-keepalive`, then `/reload`.
 
 If you installed with the old copy scripts, delete `~/.omo/agent/extensions/omo-limitless/`, or it loads next to the package.
 
+## Migrating from omo-limitless and omo-keepwarm
+
+1. Run `omo remove git:github.com/yjacket/omo-limitless`.
+2. Delete the file `~/.omo/agent/extensions/omo-keepwarm.ts` by hand.
+3. Don't run the old `omo-keepwarm uninstall`. It writes `mode: off` and cache warming stops. Never use `--purge` either, it deletes your records.
+4. Install omo-keepalive as shown above, then type `/reload`.
+5. In `~/.omo/agent/statusbar.json`, replace `limitless` with `omo-keepalive`.
+6. Remove the scheduled tasks the old version left: `Get-ScheduledTask -TaskPath \omo-limitless\ | Unregister-ScheduledTask -Confirm:$false`.
+
+The first time it loads, it moves `~/.omo/limitless` to `~/.omo/keepalive` (only when `~/.omo/keepalive` does not exist yet). Cache-warming data stays in `~/.omo-keepwarm`.
+
 ## What it does
 
-- While limitless is on and not parked, the status line shows `🔄`. It disappears after `/limitless off`.
+- While keepalive is on and not parked, the status line shows `🔄`. It disappears after `/keepalive off`.
 - While a goal runs, it parks at the next turn boundary once the 5h window reaches 90% or the 7d window reaches 95%. The status line then shows `⏸ 한도 대기 · HH:MM 재개` today, or `⏸ 한도 대기 · M/D HH:MM 재개` when the reset is on another day.
 - If the reset is within the lane's `waitLimitMs`, it waits in the session. Otherwise it writes a park record, exits, and gets relaunched at reset.
-- While waiting it sends warm turns so the prompt cache stays alive.
+- While waiting it keeps the prompt cache warm until the reset with pings that are not conversation turns and leave no record. At 99% utilization or more it does not warm. See [Cache warming](#cache-warming).
 - After the reset time (plus `resumeGraceMs`) it resumes the goal.
-- If the provider returns a limit error before a poll catches it, it parks reactively. When that error carries no reset time, the status line shows `⏸ 한도 대기 · 재개 시각 미정` ("resume time unknown") and limitless checks usage 30 minutes later. If the limit has cleared, or usage can't be read, it releases the park. If usage still shows the limit, the park becomes a normal usage park, which resumes at the reset time or, when the reset is still unknown, re-checks every `pollMinIntervalMs` (at least 60 s). A failed check retries every 30 minutes, and after 6 hours without a successful check limitless releases the park.
-- While limitless holds your goal paused, automatic runs (goal continuation, todo reminder, notifications, messages from other sessions) run no tools; a message you type - and prompts that `/loop` or hooks send on your behalf - keeps every tool except spawning subagents (`task`, `task_create`). Work already running in the background when the park starts is not stopped.
+- If the provider returns a limit error before a poll catches it, it parks reactively. When that error carries no reset time, the status line shows `⏸ 한도 대기 · 재개 시각 미정` ("resume time unknown") and keepalive checks usage 30 minutes later. If the limit has cleared, or usage can't be read, it releases the park. If usage still shows the limit, the park becomes a normal usage park, which resumes at the reset time or, when the reset is still unknown, re-checks every `pollMinIntervalMs` (at least 60 s). A failed check retries every 30 minutes, and after 6 hours without a successful check keepalive releases the park.
+- While keepalive holds your goal paused, automatic runs (goal continuation, todo reminder, notifications, messages from other sessions) run no tools; a message you type - and prompts that `/loop` or hooks send on your behalf - keeps every tool except spawning subagents (`task`, `task_create`). Work already running in the background when the park starts is not stopped.
 
 ## Config
 
-`~/.omo/limitless/config.json`. Missing keys use the default. Invalid values fall back to the default, and one warning notification at session start lists the bad keys (up to 3, then `외 N개`, "N more").
+`~/.omo/keepalive/config.json`. Missing keys use the default. Invalid values fall back to the default, and one warning notification at session start lists the bad keys (up to 3, then `외 N개`, "N more").
 
 | Key | Default | Meaning |
 |---|---|---|
@@ -37,14 +52,25 @@ If you installed with the old copy scripts, delete `~/.omo/agent/extensions/omo-
 | `thresholds.sevenDay` | `95` | 7d window usage (%) that triggers a park |
 | `waitLimitMs.anthropic-subscription` | `14400000` | Wait in session if reset is within this (ms), else exit and relaunch |
 | `waitLimitMs.chatgpt-subscription` | `7200000` | Same, for the ChatGPT subscription |
-| `warm.anthropic-subscription.on` | `true` | Send warm turns while waiting |
-| `warm.anthropic-subscription.intervalMs` | `3300000` | Warm turn interval (ms) |
-| `warm.chatgpt-subscription.on` | `true` | Send warm turns while waiting |
-| `warm.chatgpt-subscription.intervalMs` | `1620000` | Warm turn interval (ms) |
-| `warm.chatgpt-subscription.requireTtlSeconds` | `1800` | A Codex model warms only when its prompt-cache TTL equals this value (in seconds). Models with any other TTL don't warm |
+| `warm.anthropic-subscription.on` | `true` | Keep the cache warm during a park-wait |
+| `warm.chatgpt-subscription.on` | `true` | Same, for the ChatGPT subscription |
 | `enabled` | `true` | Global switch |
 | `pollMinIntervalMs` | `60000` | Minimum usage poll interval (ms) |
 | `resumeGraceMs` | `60000` | Grace after reset before resuming (ms) |
+
+## Cache warming
+
+Claude and Codex subscription sessions are kept warm while you are away, so the first turn after you return reads the cache.
+
+- **Pings that leave no record.** Claude: the session's Claude Code session is resumed as a fork that is not persisted. Codex: the last request is re-sent with `store:false` under the same cache key. Nothing reaches the conversation, the transcript or other extensions.
+- **Interval.** From the last request (yours, a goal's or another extension's turn): Claude every 55 minutes, Codex every 15 minutes. The Codex subscription cache has no guaranteed lifetime and was gone after 25-30 minutes.
+- **How long.** Normally until the time set from your return habit; during a park-wait until the reset. One miss can be transient, so the next ping still goes out; a second miss in a row stops warming for that stretch.
+- **Settings and records.** `mode` in `~/.omo-keepwarm/config.json`: `on` sends pings, `shadow` only records decisions, `off` or no file does nothing. Records stay in the same folder.
+- After a senpi update, check the ping hits once: the last-7-days line of `/keepalive` and the `ping` records under `~/.omo-keepwarm/records`. If senpi changes how it builds requests, pings miss and warming stops after the second miss in a row.
+
+### omo-ai preview-safe patch
+
+Senpi builds the cache-warm ping from a preview of the prompt, and it skips the whole ping when an extension's `before_agent_start` handler is not marked `previewSafe`. Two of omo-ai's handlers (gateway rules and onboarding) are not marked, so keepalive patches `plugin/extensions/omo.js` in the installed omo-ai, adding `{previewSafe:!0}` to those two registrations, so the ping can be built. The patch runs once per process, is idempotent, and changes nothing when the bundle shape is unknown (it reports the reason instead). The original is kept at `omo.js.before-previewsafe`. It is re-applied after omo-ai updates, and takes effect at the next launch. Set `OMO_KEEPALIVE_PREVIEW_SAFE=off` to skip it.
 
 ## omo-health
 
@@ -76,31 +102,77 @@ The session stays parked where it is and resumes in place at reset.
 ## Self-launch fallback
 
 When the terminal is neither Orca nor herdr, it registers a one-shot scheduled task under
-`\omo-limitless\` that relaunches the session at reset. If it can't register the task, the
+`\omo-keepalive\` that relaunches the session at reset. If it can't register the task, the
 session stays parked in place instead. The relaunched session deletes the task; the task
 doesn't delete itself. If the session never comes back, a task can be left over. Remove it with:
 
 ```powershell
-Get-ScheduledTask -TaskPath \omo-limitless\ | Unregister-ScheduledTask -Confirm:$false
+Get-ScheduledTask -TaskPath \omo-keepalive\ | Unregister-ScheduledTask -Confirm:$false
 ```
 
 ## Per-session switch
 
-`/limitless off` and `/limitless on` affect only the current session. The state lives in
-`~/.omo/limitless/control/<sid>.json`:
+`/keepalive off` and `/keepalive on` affect only the current session. The state lives in
+`~/.omo/keepalive/control/<sid>.json`:
 
 ```json
 {"v":1,"mode":"off"}
 ```
 
+## The screen
+
+Bare `/keepalive` shows one screen in three groups, labelled in Korean:
+
+- **한도 (limit).** `🔄 감시 중` (watching), the status line text while parked with the time left, or `⏹ 꺼짐 (이 세션)` when off for this session. Below it, a usage bar per window with its reset time. When not parked, a forecast line can say when a window reaches its threshold at the last hour's rate.
+- **캐시 (cache).** ❤️‍🔥 means warming, followed by how long (until a time, or 재개까지 "until resume") and the next ping. 🩵 means not warming, followed by one reason word. When not parked, a forecast line can give the chance you return while warming still runs.
+- **기록 (records).** Today's pings, hits and saved tokens, then the last 7 days' cold returns and saved tokens.
+
+No forecast line is shown while parked. While parked, the 🩵 word is the park hold's reason. Otherwise the reason words are: 시간 끝, 캐시 놓침, 맥락 작음, 시간 0, 이미 식음, 기준 없음, 대상 아님, 중복, 맥락 바뀜, 모델 바뀜, 정리 중, 횟수 끝, 상한, 오류 뒤, 취소 뒤, 취소, 실패, 맥락 모름, 꺼짐, 세션 닫힘, 시계 이상, 늦음, 다른 확장, 판단만 기록, 다른 인스턴스, 작업 중, 준비 중.
+
+## Goal waits and senpi's backstop
+
+When a goal is waiting on something (a terminal monitor, a background task, a workflow), senpi arms a backstop: about once an hour it sends a hidden continuation so a stuck wait can't stall the goal forever. Each of those turns is a real model call, and after an idle hour the prompt cache is usually cold.
+
+keepalive watches senpi's `goal_continuation_timer_state` and `wake_source_state` events. While a goal waits, it keeps the cache warm until the next turn. It also holds the backstop (it publishes `continuation_hold_state` with source `omo-keepalive`), but only when all of these are true:
+
+- warming is actually live for this session (worth it, eligible, armed or pinging),
+- the wait isn't a user grace period or an ask-user wait,
+- omo-health is running fresh, declares `goal-liveness`, can wake this session, and its sensor heartbeat in this session is recent and carries the goal-liveness schema,
+- the backstop setting is on.
+
+While the hold is in place, omo-health does the liveness job: if the wait turns out to be leaked or silent, it wakes the session itself. Everything else falls back to today's behaviour. If any condition drops, keepalive releases the hold and senpi's hourly backstop runs as before.
+
+There's a self-check. If keepalive holds the backstop but senpi fires it anyway, keepalive marks the backstop as tripped, stops holding until this omo process exits (a new session in the same process included), and the screen says so.
+
+Settings: `/keepalive set backstop on|off` (on by default). The hold also ends after maxHoldMinutes (default 360, valid 30 to 1440), and the cache line then shows 시간 끝.
+
+During a goal wait the 캐시 group on the screen shows these lines:
+
+- `❤️‍🔥 다음 턴까지` plus the next ping time, with no forecast line, while warming is live.
+- `🩵` plus a reason word when it isn't: 이득 없음 (not worth it), 맥락 모름, 대상 아님, 꺼짐, 시간 끝, 준비 중, or a stop word from the list above.
+- `대기  backstop 멈춤 · 확인은 omo-health` while the backstop is held.
+- `대기  backstop 그대로 · senpi 바뀜` when the self-check tripped.
+
+Rollback: run `/keepalive set backstop off`. keepalive then never holds the backstop, and senpi's hourly continuation works exactly as it does without keepalive.
+
 ## Commands
 
 | Command | Does |
 |---|---|
-| `/limitless status` | Print six lines in Korean: the status line (`⏸ 한도 대기 없음` when not parked), `상태:` park state, `사용량:` usage per window, `리셋:` reset time (HH:MM, M/D HH:MM on another day, or `unknown`), `출처:` usage source, `스위치:` 켜짐/꺼짐 |
-| `/limitless resume` | Lift the park and resume now. While still over threshold it does not re-park until the windows that were over at resume reset (you are deliberately spending the remaining quota; a window over threshold with an unknown reset time is not held); any other window crossing the threshold, `/limitless park`, `off` then `on`, or a real limit error still parks |
-| `/limitless park` | Park in the session now, but only if the current usage already calls for a park. Otherwise (usage under the threshold, or no usage decision yet) it parks nothing and prints one Korean line saying so |
-| `/limitless off` / `on` | Turn off / on for this session |
+| `/keepalive` | Show the screen described above (`/keepalive status` does the same) |
+| `/keepalive resume` | Lift the park and resume now. While still over threshold it does not re-park until the windows that were over at resume reset (you are deliberately spending the remaining quota; a window over threshold with an unknown reset time is not held); any other window crossing the threshold, `/keepalive park`, `off` then `on`, or a real limit error still parks |
+| `/keepalive park` | Park in the session now, but only if the current usage already calls for a park. Otherwise (usage under the threshold, or no usage decision yet) it parks nothing and prints one Korean line saying so |
+| `/keepalive off` / `on` | Turn off / on for this session |
+| `/keepalive set expiry <lane> <value\|auto>` | Set how long a lane is kept warm (e.g. `claude-subscription 4h`) |
+| `/keepalive set habit auto` / `--return-rate <p> --median <m> --t90 <t>` | Let the return habit be learned, or set it yourself |
+| `/keepalive set mode on\|shadow\|off` | Set cache warming: `on` sends pings, `shadow` only records decisions, `off` does nothing |
+| `/keepalive set backstop on\|off` | Let keepalive hold senpi's goal backstop while warming is live (`on`, default) or never hold it (`off`) |
+
+## Rollback
+
+1. Run `omo remove git:github.com/yjacket/omo-keepalive` (or your local path), then `omo install git:github.com/yjacket/omo-limitless`. The old version reads `~/.omo/limitless`, so move `~/.omo/keepalive` back to `~/.omo/limitless` before starting it.
+2. Recreate `~/.omo/agent/extensions/omo-keepwarm.ts` from `~/.omo-keepwarm/app/releases/<version>/extension/stub.ts.tpl`, replacing `__STUB_FORMAT__` with `1`.
+3. Type `/reload`.
 
 ## What it never does
 

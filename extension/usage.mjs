@@ -65,7 +65,7 @@ function mapUsage(provider, account, body, source = "endpoint") {
 }
 
 function authPath(deps) {
-  return (deps.env || process.env).OMO_LIMITLESS_AUTH_PATH || join(deps.homeDir || homedir(), ".omo", "agent", "auth.json");
+  return (deps.env || process.env).OMO_KEEPALIVE_AUTH_PATH || join(deps.homeDir || homedir(), ".omo", "agent", "auth.json");
 }
 
 async function readJson(fs, path) {
@@ -123,7 +123,7 @@ async function fetchMapped(fetchFn, provider, account, token, accountId, source 
 
 function identityPath(deps, account) {
   const digest = createHash("sha1").update(account).digest("hex");
-  return `${deps.homeDir || homedir()}/.omo/limitless/accounts/anthropic-${digest}.json`;
+  return `${deps.homeDir || homedir()}/.omo/keepalive/accounts/anthropic-${digest}.json`;
 }
 
 async function persistIdentity(deps, account, uuid) {
@@ -132,7 +132,7 @@ async function persistIdentity(deps, account, uuid) {
   const path = identityPath(deps, account);
   const temp = `${path}.${process.pid}.${(deps.randomUUID || (() => `${Date.now()}-${Math.random()}`))()}.tmp`;
   try {
-    await fs.mkdir(`${deps.homeDir || homedir()}/.omo/limitless/accounts`, { recursive: true });
+    await fs.mkdir(`${deps.homeDir || homedir()}/.omo/keepalive/accounts`, { recursive: true });
     await fs.writeFile(temp, JSON.stringify({ uuid }), { mode: 0o600 });
     await fs.rename(temp, path);
   } catch {
@@ -252,9 +252,9 @@ async function readUsageImpl({ provider, account }, deps = {}) {
   const cacheKey = `${provider}\0${account}`;
   const cached = cache.get(cacheKey);
   const env = deps.env || process.env;
-  if (!env.OMO_LIMITLESS_FAKE_USAGE_FILE && cached && now() >= cached.at && now() - cached.at < pollMinIntervalMs) return cached.value;
+  if (!env.OMO_KEEPALIVE_FAKE_USAGE_FILE && cached && now() >= cached.at && now() - cached.at < pollMinIntervalMs) return cached.value;
   let value;
-  const fakePath = env.OMO_LIMITLESS_FAKE_USAGE_FILE;
+  const fakePath = env.OMO_KEEPALIVE_FAKE_USAGE_FILE;
   if (fakePath) {
     const body = await readJson(deps.fs || { readFile }, fakePath);
     const mapped = body?.[provider];

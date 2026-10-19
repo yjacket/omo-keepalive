@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { startLimitless } from "../extension/limitless.mjs";
+import { startKeepalive } from "../extension/keepalive.mjs";
 import { createHarness } from "./harness.mjs";
 
 const T0 = Date.UTC(2026, 9, 7, 3, 0, 0);
@@ -12,11 +12,11 @@ const snap = (utilization, resetAt = T0 + 3600000, source = "endpoint") => ({
   windows: [{ kind: "five_hour", utilization, resetAt }], overageEnabled: false, source,
 });
 
-function setup({ util = 0, goal = null, env = { OMO_LIMITLESS_FAKE_RESET_IN_MS: "1000" }, readUsage } = {}) {
+function setup({ util = 0, goal = null, env = { OMO_KEEPALIVE_FAKE_RESET_IN_MS: "1000" }, readUsage } = {}) {
   const h = createHarness({ model: CLAUDE, branch: PRIOR_TURN, goal, now: T0, env });
   h.writeHomeJson(".omo/agent/auth.json", { "anthropic-subscription": { access: "fake" } });
   let calls = 0;
-  const core = startLimitless(h.pi, h.deps({
+  const core = startKeepalive(h.pi, h.deps({
     readUsage: readUsage ?? (async () => { calls++; return snap(typeof util === "function" ? util() : util); }),
   }));
   return { h, core, calls: () => calls };
@@ -28,11 +28,11 @@ test("reset re-poll OK releases park and sends resume message", async () => {
   try {
     await s.h.fire("session_start", { type: "session_start" });
     assert.equal(s.core.isParked(), true);
-    delete s.core.env.OMO_LIMITLESS_FAKE_RESET_IN_MS;
+    delete s.core.env.OMO_KEEPALIVE_FAKE_RESET_IN_MS;
     await s.h.clock.tick(61000);
     assert.equal(s.core.isParked(), false);
     assert.deepEqual(s.h.sentUserMessages, []);
-    assert.equal(s.h.statusLines.get("limitless"), "🔄");
+    assert.equal(s.h.statusLines.get("omo-keepalive"), "🔄");
   } finally { s.h.cleanup(); }
 });
 
@@ -43,7 +43,7 @@ test("reset while still over threshold re-parks for the newly reported reset and
   });
   try {
     await s.h.fire("session_start", { type: "session_start" });
-    delete s.core.env.OMO_LIMITLESS_FAKE_RESET_IN_MS;
+    delete s.core.env.OMO_KEEPALIVE_FAKE_RESET_IN_MS;
     await s.h.clock.tick(61000);
     assert.equal(s.core.isParked(), true);
     assert.equal(s.core.state.resetAt, T0 + 3 * 3600000);
@@ -58,15 +58,15 @@ test("reset leaves a goal paused by the user and does not restart autonomous wor
   try {
     s.h.installFakeGoalExtension();
     await s.h.fire("session_start", { type: "session_start" });
-    delete s.core.env.OMO_LIMITLESS_FAKE_RESET_IN_MS;
+    delete s.core.env.OMO_KEEPALIVE_FAKE_RESET_IN_MS;
     assert.equal(s.h.goalStore.goal.status, "paused");
     // User pause relinquishes the extension's ownership mark.
-    s.core.state.pausedByLimitless = null;
+    s.core.state.pausedByKeepalive = null;
     s.core.persist();
     await s.h.clock.tick(61000);
     assert.equal(s.h.goalStore.goal.status, "paused");
     assert.deepEqual(s.h.sentUserMessages, []);
-    assert.deepEqual(s.h.eventsEmitted.filter((event) => event.name === "limitless:park").map((event) => ({
+    assert.deepEqual(s.h.eventsEmitted.filter((event) => event.name === "keepalive:park").map((event) => ({
       state: event.payload.state, resetAt: event.payload.resetAt,
     })), [
       { state: "park-wait", resetAt: T0 + 1000 },
@@ -99,7 +99,7 @@ test("source none resumes optimistically and does not unpause an unowned goal", 
   });
   try {
     await s.h.fire("session_start", { type: "session_start" });
-    delete s.core.env.OMO_LIMITLESS_FAKE_RESET_IN_MS;
+    delete s.core.env.OMO_KEEPALIVE_FAKE_RESET_IN_MS;
     await s.h.clock.tick(61000);
     assert.equal(s.core.isParked(), false);
     assert.deepEqual(s.h.sentUserMessages, []);
@@ -114,7 +114,7 @@ test("reset with an owned goal delegates exactly-once restart and sends no dupli
   try {
     s.h.installFakeGoalExtension();
     await s.h.fire("session_start", { type: "session_start" });
-    delete s.core.env.OMO_LIMITLESS_FAKE_RESET_IN_MS;
+    delete s.core.env.OMO_KEEPALIVE_FAKE_RESET_IN_MS;
     await s.h.clock.tick(61000);
     assert.equal(s.h.goalStore.goal.status, "active");
     assert.equal(s.h.queuedTurns.length, 1);

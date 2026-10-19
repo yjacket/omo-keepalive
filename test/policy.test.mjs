@@ -560,7 +560,7 @@ test("edge cases", async (t) => {
     assert.match(result.reason, /^(5h|7d) \d+%$/);
   });
 
-  // warm.intervalMs passed through
+  // warm.on passed through (when and how often to ping is keepwarm's lane table)
   await t.test("warm config passed through", () => {
     const result = decide({
       snapshots: [{
@@ -573,7 +573,6 @@ test("edge cases", async (t) => {
       config: defaultConfig,
       now
     });
-    assert.equal(result.warm.intervalMs, 3300000);
-    assert.equal(result.warm.on, true);
+    assert.deepEqual(result.warm, { on: true });
   });
 });
