@@ -73,6 +73,7 @@ export function install(core) {
     }
   });
   core.onTransition(apply);
+  core.onConfigApplied(apply);
   core.onBoundary(apply);
   core.onSessionReset(() => kw.controller.setLimitHold(null));
 }

@@ -111,12 +111,13 @@
 //   goalStore: {read(ctx) -> goal|null, setStatus(ctx, status) -> goal}; default loads senpi's goal store.
 import * as nodeFs from "node:fs";
 import { homedir } from "node:os";
-import { dirname, join } from "node:path";
+import { basename, dirname, join } from "node:path";
 import { pathToFileURL } from "node:url";
 import { decide, overWindows } from "./policy.mjs";
 import { readAuthJson, resolveLane } from "./lane.mjs";
 import { readUsage as defaultReadUsage } from "./usage.mjs";
 import { loadState, readSharedSnapshot, saveState, statePath, writeSharedSnapshot } from "./state.mjs";
+import { configPath, configStamp, loadConfig } from "./config.mjs";
 
 export const STATUS_KEY = "omo-keepalive";
 // Shown in the status slot while keepalive is on and not parked, so the user can see it is watching. A natively
@@ -253,18 +254,23 @@ export function createCore(pi, { config, deps = {} } = {}) {
   const env = deps.env ?? process.env;
   const homeDir = deps.homeDir ?? homedir();
   const fs = deps.fs ?? nodeFs;
+  const settingsPath = configPath({ env, homeDir });
   const now = deps.now ?? Date.now;
   const setT = deps.setTimeout ?? globalThis.setTimeout;
   const clearT = deps.clearTimeout ?? globalThis.clearTimeout;
   const readUsage = deps.readUsage ?? defaultReadUsage;
   const goalStore = deps.goalStore ?? createSenpiGoalStore({ env });
   const transitionFns = [];
+  const configReloadFns = [];
+  const configAppliedFns = [];
   const boundaryFns = [];
   const beforeStartFns = [];
   const resetFns = [];
   let vetoed = false;
   const timerHandles = new Map();
   let controlReader = null;
+  let loadedConfigStamp = configStamp(settingsPath, fs);
+  let configWatcher = null;
   let lastPollAt = null;
   let holding = null;
   let staleOwnedGoal = false;
@@ -341,10 +347,34 @@ export function createCore(pi, { config, deps = {} } = {}) {
     },
 
     onTransition(fn) { transitionFns.push(fn); },
+    onConfigReload(fn) { configReloadFns.push(fn); },
+    onConfigApplied(fn) { configAppliedFns.push(fn); },
     onBoundary(fn) { boundaryFns.push(fn); },
     onBeforeSessionStart(fn) { beforeStartFns.push(fn); },
     onSessionReset(fn) { resetFns.push(fn); },
     isVetoed: () => vetoed,
+    reloadConfig() {
+      const stamp = configStamp(settingsPath, fs);
+      if (stamp === loadedConfigStamp) return { changed: false, warnings: [] };
+      loadedConfigStamp = stamp;
+      const loaded = loadConfig({ env, homeDir, fs });
+      for (const key of ["thresholds", "waitLimitMs", "warm", "pollMinIntervalMs", "resumeGraceMs"]) config[key] = loaded.config[key];
+      for (const fn of configReloadFns) {
+        try { fn(loaded.warnings); } catch (error) { core.recordError("config-reload", error); }
+      }
+      return { changed: true, warnings: loaded.warnings };
+    },
+    async applyConfigChange() {
+      const result = core.reloadConfig();
+      if (result.changed) await core.applyReloadedConfig();
+      return { changed: result.changed };
+    },
+    // Re-decide the park and tell the features after reloadConfig() reported a change.
+    async applyReloadedConfig() {
+      if (core.sessionId === null || vetoed) return;
+      if (core.enabled()) await core.poll({ force: true });
+      await notifyConfigApplied();
+    },
 
     async readUsage(provider, account) {
       const t = now();
@@ -582,11 +612,13 @@ export function createCore(pi, { config, deps = {} } = {}) {
         }
       }
       if (loaded) applySession();
+      if (!configWatcher) openConfigWatcher();
       await boundary(ctx, "session_start");
       core.refreshStatus();
     },
     handleSessionShutdown() {
       if (vetoed || core.sessionId === null) return;
+      closeConfigWatcher();
       resetSession();
       core.sessionId = null;
     },
@@ -718,6 +750,29 @@ export function createCore(pi, { config, deps = {} } = {}) {
     try { await controlReader(ctx, kind); } catch (error) { core.recordError("control", error); }
   }
 
+  async function notifyConfigApplied() {
+    for (const fn of configAppliedFns) {
+      try { await fn(); } catch (error) { core.recordError("config-applied", error); }
+    }
+  }
+
+  function openConfigWatcher() {
+    try {
+      configWatcher = (deps.watch ?? nodeFs.watch)(dirname(settingsPath), (_event, filename) => {
+        if (filename != null && String(filename) !== basename(settingsPath)) return;
+        core.timers.set("config-reload", 0, async (_ctx, stale) => {
+          if (!stale()) await core.applyConfigChange();
+        });
+      });
+      configWatcher.unref?.();
+    } catch (error) { core.recordError("config-watch", error); }
+  }
+
+  function closeConfigWatcher() {
+    configWatcher?.close?.();
+    configWatcher = null;
+  }
+
   // IS-1: while parked, a session with an active goal never spawns. The block does not depend on the pause landing
   // (a failed pause still blocks) nor on the goal being readable (a keepalive-owned pause is remembered in state).
   async function gated(ctx) {
@@ -781,6 +836,7 @@ export function createCore(pi, { config, deps = {} } = {}) {
       try { fn(); } catch (error) { core.state.lastError = { at: now(), where: "session-reset", message: errText(error) }; }
     }
     for (const name of [...timerHandles.keys()]) core.timers.clear(name);
+    closeConfigWatcher();
     holding = null;
     holdingNotice = false;
     pendingKick = false;
@@ -804,8 +860,9 @@ export function createCore(pi, { config, deps = {} } = {}) {
 
   async function boundary(ctx, kind) {
     await runControl(ctx, kind);
+    const reload = core.reloadConfig();
     if (core.enabled()) {
-      const decision = await core.poll();
+      const decision = await core.poll({ force: reload.changed });
       if (staleOwnedGoal && decision?.state === "unknown" && !core.isParked()) {
         staleOwnedGoal = false;
         await core.releaseOwnedGoal({ reason: "stale-park" });
@@ -815,6 +872,7 @@ export function createCore(pi, { config, deps = {} } = {}) {
     for (const fn of boundaryFns) {
       try { await fn(ctx, kind); } catch (error) { core.recordError(`boundary:${kind}`, error); }
     }
+    if (reload.changed) await notifyConfigApplied();
   }
 
   async function snapshotFor(provider, account, t) {

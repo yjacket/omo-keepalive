@@ -46,6 +46,10 @@ export function startKeepalive(pi, deps = {}, features = FEATURES) {
   const created = createKeepalive(pi, deps);
   if (created === null) return null;
   const core = createCore(pi, { config: created.config, deps });
+  core.onConfigReload((warnings) => {
+    const text = configWarningText(warnings);
+    if (text) core.notify(text, "warning");
+  });
   core.configWarnings = created.warnings;
   core.legacyDirError = created.legacyDirError;
   let warned = false;

@@ -19,6 +19,7 @@ export function createHarness({
   const eventsEmitted = [];
   const queuedTurns = [];
   const timers = new Map();
+  const watchers = [];
   let timerId = 0;
   let current = now;
   let isIdleNow = idle;
@@ -140,17 +141,25 @@ export function createHarness({
   };
   const harness = {
     pi, ctx, handlers, commands, statusLines, widgets, notifications, sentMessages, sentUserMessages,
-    shutdownCalls, eventsEmitted, clock, tmpHome, goalStore, queuedTurns, selfLaunchCalls,
+    shutdownCalls, eventsEmitted, clock, tmpHome, goalStore, queuedTurns, selfLaunchCalls, watchers,
     fire,
     // Text of the persistent keepalive notice widget (undefined when cleared).
     notice: () => widgets.get("keepalive-notice")?.join("\n"),
     setIdle(value) { isIdleNow = value; },
     setPendingMessages(value) { pendingMessages = value; },
     setGoal(value) { goalStore.goal = value ? { ...value } : null; },
+    fireConfigWatch(filename = "config.json") {
+      for (const watcher of watchers) if (!watcher.closed) watcher.listener("change", filename);
+    },
     // Deps bundle for createCore/startKeepalive: injected clock, timers, temp home, fake goal store.
     deps(extra = {}) {
       return {
         env, homeDir: tmpHome, now: clock.now, setTimeout: pi.setTimeout, clearTimeout: pi.clearTimeout,
+        watch: (dir, listener) => {
+          const w = { dir, listener, closed: false, close() { w.closed = true; }, unref() {} };
+          watchers.push(w);
+          return w;
+        },
         goalStore, ...extra,
         // After the spread: an explicit `selfLaunch: undefined` (park-exit.test.mjs proc) must not reach the real module either.
         selfLaunch: extra.selfLaunch ?? fakeSelfLaunch, resolveLauncher: extra.resolveLauncher ?? fakeResolveLauncher,
