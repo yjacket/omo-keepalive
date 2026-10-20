@@ -29,12 +29,12 @@ function waitRow(lane, provider, label, defaultValue) {
   const id = `wait.${lane}`;
   return {
     id, group: "한도", label,
-    hint: "리셋까지 이보다 오래 걸리면 세션을 닫고 리셋 때 다시 엽니다",
+    hint: "리셋이 이보다 늦으면 세션을 닫았다가 리셋 때 다시 엽니다",
     file: "keepalive", valueHelp: "0|30m|1h|2h|3h|4h|5h|6h|8h|12h|24h",
     read: (snap) => snap.keepalive.waitLimitMs[provider] / 60000,
     defaultValue: () => defaultValue,
     steps: (snap) => withValue(WAIT_STEPS, snap.keepalive.waitLimitMs[provider] / 60000),
-    format: (value) => value === 0 ? "안 기다림" : formatDuration(value),
+    format: (value) => value === 0 ? "안 기다림" : `${formatDuration(value)}까지`,
     toText: formatDurationToken,
     parse: (text) => {
       const value = parseDuration(text);
@@ -49,7 +49,7 @@ function waitRow(lane, provider, label, defaultValue) {
 function parkWarmRow(lane, provider, label) {
   return {
     id: `park-warm.${lane}`, group: "한도", label,
-    hint: "한도 대기 중에도 캐시를 데워 재개 뒤 첫 턴을 아낍니다",
+    hint: "리셋을 기다리는 동안에도 캐시를 데워, 다시 시작할 때 캐시를 그대로 씁니다",
     file: "keepalive", valueHelp: "on|off",
     read: (snap) => snap.keepalive.warm[provider].on,
     defaultValue: () => true,
@@ -67,9 +67,9 @@ export function limitRows() {
   return [
     thresholdRow("threshold.5h", "5시간 임계치", "5시간 사용량이 이 값에 닿으면 한도 대기를 겁니다", "fiveHour", "five_hour", 90),
     thresholdRow("threshold.7d", "7일 임계치", "7일 사용량이 이 값에 닿으면 한도 대기를 겁니다", "sevenDay", "seven_day", 95),
-    waitRow("claude", PROVIDERS.claude, "Claude 세션 안 대기", 240),
-    waitRow("chatgpt", PROVIDERS.chatgpt, "ChatGPT 세션 안 대기", 120),
-    parkWarmRow("claude", PROVIDERS.claude, "Claude 한도 대기 중 데우기"),
-    parkWarmRow("chatgpt", PROVIDERS.chatgpt, "ChatGPT 한도 대기 중 데우기"),
+    waitRow("claude", PROVIDERS.claude, "Claude 리셋 기다리기", 240),
+    waitRow("chatgpt", PROVIDERS.chatgpt, "ChatGPT 리셋 기다리기", 120),
+    parkWarmRow("claude", PROVIDERS.claude, "Claude 기다리는 동안 데우기"),
+    parkWarmRow("chatgpt", PROVIDERS.chatgpt, "ChatGPT 기다리는 동안 데우기"),
   ];
 }

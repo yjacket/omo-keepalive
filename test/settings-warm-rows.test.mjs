@@ -15,6 +15,13 @@ function snapshot(overrides = {}) {
   };
 }
 
+test("expiry rows are named like the limit rows, with the cache class only where a lane has several", () => {
+  const snap = snapshot();
+  const rows = warmRows(snap).filter((row) => row.id.startsWith("expiry."));
+  assert.deepEqual(rows.map((row) => row.label), ["Claude 구독", "ChatGPT 구독", "Anthropic API 5분 캐시", "Anthropic API 1시간 캐시", "OpenAI API"]);
+  assert.equal(rows[0].format(0, snap, new Map()), "안 데움");
+});
+
 test("warm rows build expiry rows in lane order and format auto expiry", () => {
   const snap = snapshot();
   const rows = warmRows(snap);

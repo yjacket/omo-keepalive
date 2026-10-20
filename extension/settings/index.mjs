@@ -80,7 +80,7 @@ export function applyHabit(draft, staged, changedIds) {
   if (changed.has("habit.m")) habit.medianMinutes = staged.get("habit.m");
   if (changed.has("habit.t90")) habit.t90Minutes = staged.get("habit.t90");
   if (!(habit.p > 0 && habit.p <= 1 && habit.medianMinutes > 0 && habit.medianMinutes < habit.t90Minutes)) {
-    throw new Error("복귀 습관 값이 맞지 않습니다: 중앙값은 90% 복귀보다 짧아야 합니다");
+    throw new Error("복귀 습관 값이 맞지 않습니다: 절반이 돌아오는 시간은 90%가 돌아오는 시간보다 짧아야 합니다");
   }
   draft.habit = habit;
 }

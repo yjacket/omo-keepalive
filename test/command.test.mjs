@@ -334,7 +334,7 @@ test("TUI settings screen opens, saves a threshold, and focuses expiry", async (
   assert.equal(closed, true);
   await h.command.handler("set expiry", ctx);
   rendered = component.render(100).join("\n");
-  assert.match(rendered, /▸ claude-subscription/);
+  assert.match(rendered, /▸ Claude 구독/);
 });
 
 test("a tall terminal shows every setting row without scrolling", async (t) => {
@@ -351,10 +351,10 @@ test("a tall terminal shows every setting row without scrolling", async (t) => {
   };
   const tall = await open(50);
   assert.match(tall, /5시간 임계치/);
-  assert.match(tall, /90% 복귀/);
+  assert.match(tall, /90%가 돌아오는 시간/);
   const short = await open(24);
   assert.match(short, /5시간 임계치/);
-  assert.doesNotMatch(short, /90% 복귀/);
+  assert.doesNotMatch(short, /90%가 돌아오는 시간/);
   assert.ok(short.split("\n").length <= Math.floor(24 * 0.8), "the screen fits in 80% of a 24-row terminal");
 });
 

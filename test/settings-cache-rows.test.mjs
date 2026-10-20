@@ -64,14 +64,14 @@ test("hold row follows the cache settings contract", () => {
   const snapshot = snap();
   assert.deepEqual(
     [setting.id, setting.group, setting.label, setting.file],
-    ["hold", "캐시", "goal 대기 최대", "keepwarm"],
+    ["hold", "캐시", "goal 기다릴 때 데우기", "keepwarm"],
   );
   assert.equal(setting.read(snapshot), 360);
   assert.equal(setting.defaultValue(snapshot), 360);
   assert.deepEqual(setting.steps(snapshot, new Map()), [30, 60, 90, 120, 180, 240, 360, 480, 720, 1080, 1440]);
   assert.deepEqual(setting.steps(snap({ maxHoldMinutes: 100 }), new Map()), [30, 60, 90, 100, 120, 180, 240, 360, 480, 720, 1080, 1440]);
-  assert.equal(setting.format(30, snapshot, new Map()), "30분");
-  assert.equal(setting.format(90, snapshot, new Map()), "1시간 30분");
+  assert.equal(setting.format(30, snapshot, new Map()), "30분까지");
+  assert.equal(setting.format(90, snapshot, new Map()), "1시간 30분까지");
   assert.equal(setting.toText(240), "4h");
   assert.equal(setting.toText(90), "1h30m");
   assert.equal(setting.parse("45m"), 45);
@@ -115,7 +115,7 @@ test("episode USD row follows the cache settings contract", () => {
   const snapshot = snap();
   assert.deepEqual(
     [setting.id, setting.group, setting.label, setting.file],
-    ["usd.episode", "캐시", "한 번 비용 상한", "keepwarm"],
+    ["usd.episode", "캐시", "자리 비울 때마다 비용 상한", "keepwarm"],
   );
   assert.equal(setting.read(snapshot), 0.5);
   assert.equal(setting.defaultValue(snapshot), 0.5);

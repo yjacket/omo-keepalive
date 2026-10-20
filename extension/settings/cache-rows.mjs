@@ -36,13 +36,13 @@ const rows = [
     apply: (draft, value) => { draft.backstop = value; },
   },
   {
-    id: "hold", group: "캐시", label: "goal 대기 최대",
-    hint: "goal이 기다리는 동안 데우고 backstop을 붙잡는 최대 시간",
+    id: "hold", group: "캐시", label: "goal 기다릴 때 데우기",
+    hint: "goal이 무언가를 기다리는 동안 캐시를 데우고 backstop을 붙잡아 두는 최대 시간입니다",
     file: "keepwarm", valueHelp: "30-1440m",
     read: (snap) => snap.keepwarm.maxHoldMinutes,
     defaultValue: () => 360,
     steps: (snap) => withNumericValue(HOLD_STEPS, snap.keepwarm.maxHoldMinutes),
-    format: (value) => formatDuration(value),
+    format: (value) => `${formatDuration(value)}까지`,
     toText: (value) => formatDurationToken(value),
     parse: (text) => {
       const value = parseDuration(text);
@@ -52,7 +52,7 @@ const rows = [
   },
   {
     id: "usd.day", group: "캐시", label: "하루 비용 상한",
-    hint: "API 키 lane의 ping 비용이 하루 이 값을 넘으면 데우기를 멈춥니다",
+    hint: "API 키로 데울 때 하루 ping 비용이 이 값을 넘으면 데우기를 멈춥니다",
     file: "keepwarm", valueHelp: ">=0",
     read: (snap) => snap.keepwarm.maxUsdPerDay,
     defaultValue: () => 3,
@@ -63,8 +63,8 @@ const rows = [
     apply: (draft, value) => { draft.maxUsdPerDay = value; },
   },
   {
-    id: "usd.episode", group: "캐시", label: "한 번 비용 상한",
-    hint: "자리를 한 번 비울 때 쓰는 API 키 lane의 ping 비용 상한",
+    id: "usd.episode", group: "캐시", label: "자리 비울 때마다 비용 상한",
+    hint: "자리를 한 번 비울 때마다 API 키로 데우는 ping 비용의 상한입니다",
     file: "keepwarm", valueHelp: ">=0",
     read: (snap) => snap.keepwarm.maxUsdPerEpisode,
     defaultValue: () => 0.5,

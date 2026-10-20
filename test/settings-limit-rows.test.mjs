@@ -52,7 +52,7 @@ test("wait rows merge off-grid values and step to the next valid duration", () =
   assert.ok(claude.steps(snap).includes(330));
   assert.equal(stepValue(claude.steps(snap), 330, 1), 360);
   assert.equal(claude.format(0, snap), "안 기다림");
-  assert.equal(claude.format(90, snap), "1시간 30분");
+  assert.equal(claude.format(90, snap), "1시간 30분까지");
   assert.equal(claude.toText(90), "1h30m");
   assert.equal(claude.parse("0"), 0);
   assert.equal(claude.parse("-1"), undefined);

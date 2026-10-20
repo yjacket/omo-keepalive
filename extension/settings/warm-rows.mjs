@@ -7,6 +7,12 @@ const isObject = (value) => value !== null && typeof value === "object" && !Arra
 const habitGridM = [1, 2, 3, 5, 7.5, 10, 15, 20, 30, 45, 60, 90, 120, 180, 240];
 const habitGridT90 = [10, 15, 20, 30, 45, 60, 90, 120, 180, 240, 360, 480, 720, 1440];
 const habitApply = () => {};
+const LANE_NAMES = {
+  "claude-subscription": "Claude 구독",
+  "codex-subscription": "ChatGPT 구독",
+  "anthropic-api": "Anthropic API",
+  "openai-api": "OpenAI API",
+};
 const stagedValue = (staged, id, fallback) => staged instanceof Map && staged.has(id) ? staged.get(id) : fallback;
 
 export function effectiveHabit(snap, staged = new Map()) {
@@ -38,11 +44,18 @@ function habitRow(id, label, hint, read, defaultValue, steps, format, parse, lin
 
 export function warmRows(snap) {
   const lanes = snap.lanes ?? laneDescriptors(snap.keepwarm?.lanes).filter(({ lane }) => lane.policy === "decide");
+  // A lane that comes in several cache classes names the class: "Anthropic API 5분 캐시".
+  const classes = (id) => lanes.filter(({ lane }) => lane.id === id).length;
+  const laneName = (lane, key) => {
+    const name = LANE_NAMES[lane.id];
+    if (!name) return key;
+    return classes(lane.id) > 1 ? `${name} ${formatDuration(lane.ttlSec / 60)} 캐시` : name;
+  };
   const expiryRows = lanes.map(({ key, lane }) => ({
     id: `expiry.${key}`,
-    group: "데우는 시간",
-    label: key,
-    hint: "자리를 비운 뒤 이 lane을 데우는 최대 시간입니다. 자동은 복귀 습관으로 계산합니다",
+    group: "자리 비운 뒤 데우는 시간",
+    label: laneName(lane, key),
+    hint: "자리를 비운 뒤 캐시를 데워 두는 최대 시간입니다. 자동이면 복귀 습관으로 정합니다",
     file: "keepwarm",
     valueHelp: `auto|${lane.grid.map(formatDurationToken).join("|")}`,
     read: (s) => expirySettingFor(s.keepwarm?.expiry, lane),
@@ -53,7 +66,7 @@ export function warmRows(snap) {
     },
     format: (value, s, staged) => value === "auto"
       ? `자동 (${formatDuration(resolveExpiry({ lane, habit: effectiveHabit(s, staged), setting: "auto" }).effectiveMin)})`
-      : value === 0 ? "0 (안 데움)" : formatDuration(value),
+      : value === 0 ? "안 데움" : formatDuration(value),
     toText: (value) => typeof value === "string" ? value : formatDurationToken(value),
     parse: (text) => {
       if (typeof text !== "string") return undefined;
@@ -87,7 +100,7 @@ export function warmRows(snap) {
     () => ({ habit: "manual" }),
   );
   const m = habitRow(
-    "habit.m", "복귀 중앙값", "돌아오는 사람의 절반이 이 시간 안에 돌아옵니다",
+    "habit.m", "절반이 돌아오는 시간", "자리를 비웠다가 돌아오는 경우의 절반이 이 시간 안에 돌아옵니다",
     (s) => s.habit.mMin, (s) => s.autoHabit.mMin,
     (s, staged) => withValue(habitGridM, s.habit.mMin)
       .filter((value) => value < stagedValue(staged, "habit.t90", s.habit.t90Min)),
@@ -103,7 +116,7 @@ export function warmRows(snap) {
     },
   );
   const t90 = habitRow(
-    "habit.t90", "90% 복귀", "돌아오는 사람의 90%가 이 시간 안에 돌아옵니다",
+    "habit.t90", "90%가 돌아오는 시간", "자리를 비웠다가 돌아오는 경우의 90%가 이 시간 안에 돌아옵니다",
     (s) => s.habit.t90Min, (s) => s.autoHabit.t90Min,
     (s, staged) => withValue(habitGridT90, s.habit.t90Min)
       .filter((value) => value > stagedValue(staged, "habit.m", s.habit.mMin)),

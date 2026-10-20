@@ -174,14 +174,14 @@ Rollback: run `/keepalive set backstop off`. keepalive then never holds the back
 ## Settings screen
 
 The settings screen has four groups:
-- **한도 (limits):** 5h and 7d thresholds, in-session wait limits, and warming during a park.
+- **한도 (limits):** 5h and 7d thresholds, how long to keep the session open waiting for a reset, and warming while it waits.
 - **캐시 (cache):** warming mode, goal backstop, maximum hold, and daily and per-episode USD limits.
-- **데우는 시간 (warming time):** per-lane warming duration.
+- **자리 비운 뒤 데우는 시간 (warming after you step away):** how long each subscription or API lane is kept warm after you step away.
 - **복귀 습관 (return habit):** automatic or manual return-rate, median, and 90th-percentile times.
 
 Keys: `↑↓` move, `←→` change, `Enter`/`Space` next value, `r` restore default, `s` save, `q`/`Esc` close (press twice when there are unsaved changes).
 
-Every keepalive config value except `enabled` reaches every running session as soon as the file is saved, including thresholds, in-session wait limits, warming during a park, and hand edits to `pollMinIntervalMs` or `resumeGraceMs`. Cache settings (the 캐시, 데우는 시간 and 복귀 습관 groups) reach running sessions within 5 seconds. Only `enabled` requires a file edit and `/reload`. An unreadable settings file is never overwritten.
+Every keepalive config value except `enabled` reaches every running session as soon as the file is saved, including thresholds, in-session wait limits, warming during a park, and hand edits to `pollMinIntervalMs` or `resumeGraceMs`. Cache settings (the 캐시, 자리 비운 뒤 데우는 시간 and 복귀 습관 groups) reach running sessions within 5 seconds. Only `enabled` requires a file edit and `/reload`. An unreadable settings file is never overwritten.
 
 ## Rollback
 

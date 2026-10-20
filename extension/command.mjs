@@ -53,7 +53,7 @@ export function install(core) {
     ["off | on", "이 세션에서 끄기 / 켜기"],
     ["set", "설정 화면 (터미널 밖에서는 설정 목록)"],
     ["set <item> <value>", "설정 하나 바로 바꾸기 (예: set threshold 5h 95)"],
-    ["set expiry <lane> <step|auto>", "lane별 데우는 시간 (예: set expiry claude-subscription 4h)"],
+    ["set expiry <lane> <step|auto>", "자리 비운 뒤 데우는 시간 (예: set expiry claude-subscription 4h)"],
     ["set habit auto | --return-rate <0-1> --median <dur> --t90 <dur>", ""],
     ["", "복귀 습관 자동 / 직접 정하기"],
     ["set mode on|shadow|off", "캐시 데우기 켜기 / 기록만 / 끄기"],

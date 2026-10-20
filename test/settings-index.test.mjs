@@ -45,7 +45,7 @@ test("empty homes produce a readable snapshot and twenty rows in group order", (
   assert.equal(snap.keepwarm.mode, "off");
   assert.deepEqual(snap.usage, { five_hour: 95, seven_day: 51 });
   assert.equal(rows.length, 20);
-  assert.deepEqual([...new Set(rows.map((row) => row.group))], ["한도", "캐시", "데우는 시간", "복귀 습관"]);
+  assert.deepEqual([...new Set(rows.map((row) => row.group))], ["한도", "캐시", "자리 비운 뒤 데우는 시간", "복귀 습관"]);
   assert.equal(rows[0].format(90, snap), "90%  (지금 95%)");
 }));
 
