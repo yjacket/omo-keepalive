@@ -255,3 +255,129 @@ test("status identifies an inert cache-warming instance", async (t) => {
   await h.command.handler("status", h.ctx);
   assert.ok(h.notifications.at(-1).text.split("\n").includes("캐시  🩵 다른 인스턴스"));
 });
+
+test("text settings list, update thresholds, reject invalid values, and complete", async (t) => {
+  const h = await setup(t);
+  const definition = h.commands.get("keepalive");
+  await h.command.handler("set", h.ctx);
+  assert.match(h.notifications.at(-1).text, /threshold 5h/);
+  await h.command.handler("set threshold 7d 97", h.ctx);
+  assert.equal(h.readHomeJson(".omo/keepalive/config.json").thresholds.sevenDay, 97);
+  assert.match(h.notifications.at(-1).text, /^keepalive: 7일 임계치 97%/);
+  await h.command.handler("set threshold 5h 120", h.ctx);
+  assert.equal(h.notifications.at(-1).level, "warning");
+  assert.equal(h.core.config.thresholds.fiveHour, 90);
+  assert.ok(definition.getArgumentCompletions("set th").some((x) => x.value === "set threshold"));
+  assert.ok(definition.getArgumentCompletions("").some((x) => x.value === "set"));
+  const habit = definition.getArgumentCompletions("set habit ");
+  assert.ok(habit.some((x) => x.value === "set habit p"));
+  assert.ok(habit.some((x) => x.value === "set habit manual"));
+  assert.equal(habit.filter((x) => x.value === "set habit auto").length, 1);
+});
+
+test("text prefix lists settings and a threshold change releases a park", async (t) => {
+  const h = await setup(t);
+  await h.command.handler("set threshold", h.ctx);
+  assert.ok(h.notifications.at(-1).text.startsWith("keepalive 설정 · 바꾸기: /keepalive set <항목> <값>"));
+  await h.command.handler("set threshold 5h 96", h.ctx);
+  assert.equal(h.core.isParked(), false);
+});
+
+test("habit manual freezes effective values on a fresh home", async (t) => {
+  const h = await setup(t);
+  await h.command.handler("set habit manual", h.ctx);
+  assert.deepEqual(h.readHomeJson(".omo-keepwarm/config.json").habit, {
+    p: 0.81, medianMinutes: 10.5, t90Minutes: 140,
+  });
+  // A median at or past the 90% time moves the 90% time up, as the screen does.
+  await h.command.handler("set habit m 3h", h.ctx);
+  assert.deepEqual(h.readHomeJson(".omo-keepwarm/config.json").habit, {
+    p: 0.81, medianMinutes: 180, t90Minutes: 240,
+  });
+  await h.command.handler("set expiry claude-subscription", h.ctx);
+  assert.match(h.notifications.at(-1).text, /^usage: \/keepalive set expiry/);
+});
+
+test("TUI settings screen opens, saves a threshold, and focuses expiry", async (t) => {
+  const h = await setup(t);
+  const calls = [];
+  let component;
+  let closed = false;
+  const tui = { requestRender() {} };
+  const theme = { bold: (s) => s, fg: (_c, s) => s };
+  const ctx = {
+    ...h.ctx, mode: "tui",
+    ui: { ...h.ctx.ui, custom: async (factory, opts) => {
+      calls.push(opts);
+      component = await factory(tui, theme, { matches: () => false }, (r) => { closed = r ?? true; });
+    } },
+  };
+  await h.command.handler("set", ctx);
+  assert.equal(calls.length, 1);
+  assert.equal(calls[0].overlay, true);
+  let rendered = component.render(80).join("\n");
+  assert.match(rendered, /keepalive 설정/);
+  assert.match(rendered, /5시간 임계치/);
+  assert.match(rendered, /90%  \(지금 95%\)/);
+  component.handleInput("\x1b[C");
+  component.handleInput("s");
+  assert.equal(h.readHomeJson(".omo/keepalive/config.json").thresholds.fiveHour, 91);
+  assert.equal(h.core.config.thresholds.fiveHour, 91);
+  // Usage is 95%: raising the threshold to 96 from the screen releases this session's park, with no watcher event.
+  const released = new Promise((resolve) => h.core.onTransition((_prev, next) => { if (next.parkState === "ok") resolve(); }));
+  for (let i = 0; i < 5; i++) component.handleInput("\x1b[C");
+  component.handleInput("s");
+  assert.equal(h.core.config.thresholds.fiveHour, 96);
+  await released;
+  assert.equal(h.core.isParked(), false);
+  component.handleInput("q");
+  assert.equal(closed, true);
+  await h.command.handler("set expiry", ctx);
+  rendered = component.render(100).join("\n");
+  assert.match(rendered, /▸ claude-subscription/);
+});
+
+test("a tall terminal shows every setting row without scrolling", async (t) => {
+  const h = await setup(t);
+  let component;
+  const theme = { bold: (s) => s, fg: (_c, s) => s };
+  const open = async (rows) => {
+    const ctx = {
+      ...h.ctx, mode: "tui",
+      ui: { ...h.ctx.ui, custom: async (factory) => { component = await factory({ terminal: { rows }, requestRender() {} }, theme, { matches: () => false }, () => {}); } },
+    };
+    await h.command.handler("set", ctx);
+    return component.render(120).join("\n");
+  };
+  const tall = await open(50);
+  assert.match(tall, /5시간 임계치/);
+  assert.match(tall, /90% 복귀/);
+  const short = await open(24);
+  assert.match(short, /5시간 임계치/);
+  assert.doesNotMatch(short, /90% 복귀/);
+  assert.ok(short.split("\n").length <= Math.floor(24 * 0.8), "the screen fits in 80% of a 24-row terminal");
+});
+
+test("registered habit text aliases and setting write failures", async (t) => {
+  const h = await setup(t);
+  h.writeHomeJson(".omo-keepwarm/config.json", { v: 1, mode: "on", habit: { futureKey: 7, p: 0.8, medianMinutes: 10, t90Minutes: 140 } });
+  await h.command.handler("set habit p 0.7", h.ctx);
+  assert.equal(h.notifications.at(-1).text, "keepalive: 돌아오는 비율 70%");
+  assert.equal(h.readHomeJson(".omo-keepwarm/config.json").habit.p, 0.7);
+  assert.equal(h.notifications.at(-1).text, "keepalive: 돌아오는 비율 70%");
+  await h.command.handler("set habit m 15m", h.ctx);
+  assert.equal(h.readHomeJson(".omo-keepwarm/config.json").habit.medianMinutes, 15);
+  await h.command.handler("set habit manual", h.ctx);
+  assert.equal(h.readHomeJson(".omo-keepwarm/config.json").habit.p, 0.7);
+  await h.command.handler("set habit auto", h.ctx);
+  assert.equal(h.readHomeJson(".omo-keepwarm/config.json").habit, "auto");
+  assert.match(h.notifications.at(-1).text, /habit default/);
+  h.writeHomeJson(".omo-keepwarm/config.json", { v: 1, mode: "on", habit: { futureKey: 7, p: 0.8, medianMinutes: 10, t90Minutes: 140 } });
+  await h.command.handler("set habit --return-rate 0.5 --median 20m --t90 3h", h.ctx);
+  assert.equal(h.readHomeJson(".omo-keepwarm/config.json").habit.futureKey, 7);
+  h.writeHomeJson(".omo-keepwarm/config.json", "not-json");
+  await h.command.handler("set mode on", h.ctx);
+  assert.equal(h.notifications.at(-1).level, "warning");
+  assert.match(h.notifications.at(-1).text, /^keepalive: 설정을 저장하지 못했습니다/);
+  assert.equal(h.readHomeJson(".omo-keepwarm/config.json"), null);
+});
