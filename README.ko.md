@@ -44,6 +44,7 @@ omo가 저장소를 `~/.omo/agent/git/github.com/yjacket/omo-keepalive`에 클�
 ## 설정
 
 `~/.omo/keepalive/config.json`. 없는 키는 기본값을 쓴다. 잘못된 값은 기본값으로 돌아가고, 세션 시작 때 잘못된 키를 적은 경고 알림이 한 번 뜬다(최대 3개, 나머지는 `외 N개`).
+값은 `/keepalive set`으로 바꿀 수 있고, `enabled`를 제외한 파일 편집은 실행 중인 모든 세션에 반영된다.
 
 | 키 | 기본값 | 설명 |
 |---|---|---|
@@ -161,12 +162,24 @@ goal 대기 중 화면의 캐시 묶음에는 이런 줄이 붙는다.
 | `/keepalive resume` | 한도 대기를 풀고 바로 재개. 여전히 임계치 위여도 재개 시점에 넘어 있던 창들이 리셋될 때까지 다시 대기하지 않는다(남은 사용량을 일부러 쓰는 것. 리셋 시각을 모르는 창은 보유하지 않는다). 그 밖의 창이 임계치를 넘거나, `/keepalive park`, `off` 뒤 `on`, 실제 한도 오류가 나면 다시 대기한다 |
 | `/keepalive park` | 지금 세션 안에서 한도 대기. 현재 사용량이 이미 park 판정일 때만 동작하고, 아니면(사용량이 임계치 아래이거나 아직 판정이 없을 때) 대기를 걸지 않고 그 사실을 한 줄로 알린다 |
 | `/keepalive off` / `on` | 이 세션에서 끄기 / 켜기 |
-| `/keepalive set expiry` | lane별로 자리를 비운 뒤 데우는 최대 시간과 고를 수 있는 값(steps) 보기. `[ ]`가 지금 값 |
-| `/keepalive set expiry <lane> <step\|auto>` | 그 시간 바꾸기. step은 그 lane의 steps 중 하나(`0`은 데우지 않음), `auto`는 복귀 습관으로 계산. 예: `claude-subscription 4h`, `codex-subscription 1h30m` |
-| `/keepalive set habit` | 복귀 습관 보기 |
+| `/keepalive set` | 설정 화면을 연다. 터미널 UI 밖에서는 설정 목록을 출력한다 |
+| `/keepalive set <item> <value>` | 설정 하나를 바꾼다. item은 목록의 왼쪽 열이다. 예: `set threshold 5h 95`, `set wait claude 3h`, `set usd day 5` |
+| `/keepalive set expiry <lane> <step\|auto>` | lane별 데우는 시간을 정한다 (`0`은 데우지 않음, `auto`는 복귀 습관 사용) |
 | `/keepalive set habit auto` / `--return-rate <0-1> --median <dur> --t90 <dur>` | 복귀 습관을 기록에서 자동으로 두거나 직접 정하기. 돌아오는 비율, 복귀 시간 중앙값, 90%가 돌아오는 시간 (예: `--return-rate 0.8 --median 10m --t90 2h`) |
 | `/keepalive set mode on\|shadow\|off` | 캐시 데우기 설정. `on`은 ping을 보내고, `shadow`는 판단만 기록하고, `off`는 아무것도 하지 않는다 |
 | `/keepalive set backstop on\|off` | 데우기가 도는 동안 senpi goal backstop을 붙잡게 하기(`on`, 기본) 또는 절대 붙잡지 않기(`off`) |
+
+## 설정 화면
+
+설정 화면은 네 묶음으로 되어 있다.
+- **한도:** 5시간·7일 임계치, 세션 안 대기 한도, 한도 대기 중 데우기 설정.
+- **캐시:** 데우기 방식, goal backstop, 최대 대기 시간, 하루·한 번 비용 상한.
+- **데우는 시간:** lane별 데우는 시간.
+- **복귀 습관:** 자동 또는 직접 설정하는 복귀 비율, 중앙값, 90% 복귀 시간.
+
+키: `↑↓` 이동, `←→` 변경, `Enter`/`Space` 다음 값, `r` 기본값, `s` 저장, `q`/`Esc` 닫기 (저장하지 않은 변경이 있으면 두 번 누른다).
+
+`enabled`를 제외한 모든 keepalive 설정값은 파일을 저장하는 즉시 실행 중인 모든 세션에 반영된다. 임계치, 세션 안 대기 한도, 한도 대기 중 데우기뿐 아니라 `pollMinIntervalMs`와 `resumeGraceMs`를 직접 편집한 값도 반영된다. 캐시·데우는 시간·복귀 습관 묶음의 설정은 실행 중인 세션에 5초 안에 반영된다. `enabled`만 파일을 편집한 뒤 `/reload`해야 한다. 읽을 수 없는 설정 파일은 절대 덮어쓰지 않는다.
 
 ## 되돌리기
 

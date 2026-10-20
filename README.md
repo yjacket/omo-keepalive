@@ -45,6 +45,7 @@ The first time it loads, it moves `~/.omo/limitless` to `~/.omo/keepalive` (only
 ## Config
 
 `~/.omo/keepalive/config.json`. Missing keys use the default. Invalid values fall back to the default, and one warning notification at session start lists the bad keys (up to 3, then `외 N개`, "N more").
+Values can be changed with `/keepalive set`; file edits reach every running session except changes to `enabled`.
 
 | Key | Default | Meaning |
 |---|---|---|
@@ -163,12 +164,24 @@ Rollback: run `/keepalive set backstop off`. keepalive then never holds the back
 | `/keepalive resume` | Lift the park and resume now. While still over threshold it does not re-park until the windows that were over at resume reset (you are deliberately spending the remaining quota; a window over threshold with an unknown reset time is not held); any other window crossing the threshold, `/keepalive park`, `off` then `on`, or a real limit error still parks |
 | `/keepalive park` | Park in the session now, but only if the current usage already calls for a park. Otherwise (usage under the threshold, or no usage decision yet) it parks nothing and prints one Korean line saying so |
 | `/keepalive off` / `on` | Turn off / on for this session |
-| `/keepalive set expiry` | Show how long each lane is kept warm after you step away, and the steps it accepts; `[ ]` marks the current value |
-| `/keepalive set expiry <lane> <step\|auto>` | Change that time: one of the lane's steps (`0` means no warming) or `auto` (computed from your return habit). E.g. `claude-subscription 4h`, `codex-subscription 1h30m` |
-| `/keepalive set habit` | Show the return habit |
+| `/keepalive set` | Open the settings screen; outside the terminal UI, print the settings list |
+| `/keepalive set <item> <value>` | Change one setting; item is the left column of the list. E.g. `set threshold 5h 95`, `set wait claude 3h`, `set usd day 5` |
+| `/keepalive set expiry <lane> <step\|auto>` | Set per-lane warming time (`0` means no warming; `auto` uses the return habit) |
 | `/keepalive set habit auto` / `--return-rate <0-1> --median <dur> --t90 <dur>` | Let the return habit be learned, or set it yourself: share of absences you return from, median return time, time by which 90% return (e.g. `--return-rate 0.8 --median 10m --t90 2h`) |
 | `/keepalive set mode on\|shadow\|off` | Set cache warming: `on` sends pings, `shadow` only records decisions, `off` does nothing |
 | `/keepalive set backstop on\|off` | Let keepalive hold senpi's goal backstop while warming is live (`on`, default) or never hold it (`off`) |
+
+## Settings screen
+
+The settings screen has four groups:
+- **한도 (limits):** 5h and 7d thresholds, in-session wait limits, and warming during a park.
+- **캐시 (cache):** warming mode, goal backstop, maximum hold, and daily and per-episode USD limits.
+- **데우는 시간 (warming time):** per-lane warming duration.
+- **복귀 습관 (return habit):** automatic or manual return-rate, median, and 90th-percentile times.
+
+Keys: `↑↓` move, `←→` change, `Enter`/`Space` next value, `r` restore default, `s` save, `q`/`Esc` close (press twice when there are unsaved changes).
+
+Every keepalive config value except `enabled` reaches every running session as soon as the file is saved, including thresholds, in-session wait limits, warming during a park, and hand edits to `pollMinIntervalMs` or `resumeGraceMs`. Cache settings (the 캐시, 데우는 시간 and 복귀 습관 groups) reach running sessions within 5 seconds. Only `enabled` requires a file edit and `/reload`. An unreadable settings file is never overwritten.
 
 ## Rollback
 
