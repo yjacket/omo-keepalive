@@ -258,6 +258,11 @@ test("updateConfig: creates file from DEFAULTS when missing", () => {
   assert.equal(disk.mode, "on");
   assert.equal(disk.maxUsdPerDay, 3);
   assert.equal(disk.v, 1);
+  const other = setup();
+  updateConfig(other.home, (c) => {
+    c.expiry = { x: 60 };
+  });
+  assert.equal(readJsonSafe(other.files.config).mode, "off");
 });
 
 test("updateConfig: preserves unknown keys", () => {
@@ -272,12 +277,15 @@ test("updateConfig: preserves unknown keys", () => {
   assert.deepEqual(disk.other, [1, 2]);
 });
 
-test("updateConfig: mutator may return a replacement; result is validated", () => {
-  const { home, files } = setup();
-  updateConfig(home, () => ({ mode: "loud", maxUsdPerDay: -2, expiry: { x: 30 } }));
+test("updateConfig: a replacement introducing invalid values is refused; a valid one is written", () => {
+  const { home, files, put } = setup();
+  put(files.config, { v: 1, mode: "shadow" });
+  const before = fs.readFileSync(files.config, "utf8");
+  assert.throws(() => updateConfig(home, () => ({ mode: "loud", maxUsdPerDay: -2 })), /keepwarm config invalid: mode, maxUsdPerDay/);
+  assert.equal(fs.readFileSync(files.config, "utf8"), before);
+  updateConfig(home, () => ({ v: 1, mode: "on", expiry: { x: 30 } }));
   const disk = readJsonSafe(files.config);
-  assert.equal(disk.mode, "shadow");
-  assert.equal(disk.maxUsdPerDay, 3);
+  assert.equal(disk.mode, "on");
   assert.deepEqual(disk.expiry, { x: 30 });
 });
 
@@ -298,11 +306,33 @@ test("updateConfig: atomic write leaves no temp files and old file survives a th
   assert.deepEqual(readJsonSafe(files.config).expiry, { a: "auto" });
 });
 
-test("updateConfig on a broken file starts from defaults", () => {
+test("updateConfig refuses an unreadable file", () => {
   const { home, files, put } = setup();
   put(files.config, "{ broken");
-  updateConfig(home, (c) => {
+  const before = fs.readFileSync(files.config, "utf8");
+  assert.throws(() => updateConfig(home, (c) => {
     c.mode = "on";
+  }), /keepwarm config unreadable/);
+  assert.equal(fs.readFileSync(files.config, "utf8"), before);
+});
+
+test("updateConfig keeps untouched fields", () => {
+  const { home, files, put } = setup();
+  put(files.config, { v: 1, mode: "on", maxHoldMinutes: 2000, futureKey: 1 });
+  updateConfig(home, (c) => {
+    c.maxUsdPerDay = 5;
   });
-  assert.equal(readJsonSafe(files.config).mode, "on");
+  const disk = readJsonSafe(files.config);
+  assert.equal(disk.maxHoldMinutes, 2000);
+  assert.equal(disk.futureKey, 1);
+  assert.equal(disk.maxUsdPerDay, 5);
+});
+
+test("autoHabit ignores a manual habit; observed habit is used when fresh", () => {
+  const { files, clock, src, put } = setup();
+  put(files.config, { v: 1, habit: { p: 0.5, medianMinutes: 5, t90Minutes: 60 } });
+  assert.equal(src.habit().source, "manual");
+  assert.deepEqual(src.autoHabit(), DEFAULT_HABIT);
+  put(files.behavior, { v: 1, p: 0.6, mMin: 8, t90Min: 90, humanReturns: 40, updatedAt: clock.now() });
+  assert.deepEqual(src.autoHabit(), { p: 0.6, mMin: 8, t90Min: 90, source: "observed" });
 });

@@ -129,7 +129,7 @@ function set(home, now, args, io) {
     }
   }
   updateConfig(home, (c) => {
-    c.expiry[key] = v;
+    c.expiry = { ...(c.expiry !== null && typeof c.expiry === "object" && !Array.isArray(c.expiry) ? c.expiry : {}), [key]: v };
   });
   io.stdout(`${key} expiry set to ${v === "auto" ? "auto" : formatMinutes(v)}\n`);
   return 0;

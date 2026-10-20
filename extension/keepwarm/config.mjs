@@ -180,6 +180,10 @@ export function createConfigSource({ home, now = Date.now, statEveryMs = 5000 } 
       }
       return observedHabit() ?? { ...DEFAULT_HABIT };
     },
+    autoHabit() {
+      refresh();
+      return observedHabit() ?? { ...DEFAULT_HABIT };
+    },
     invalid() {
       refresh();
       return [...invalidList];
@@ -192,17 +196,31 @@ export function createConfigSource({ home, now = Date.now, statEveryMs = 5000 } 
   };
 }
 
-// mutator receives a copy of the current config (unknown keys included) and may mutate it
-// or return a replacement. The result is validated and written atomically.
+// The mutator gets a copy of the raw file object (unknown keys and pre-existing invalid fields kept)
+// and may mutate it or return a replacement. Only keys it newly makes invalid are refused; the object
+// is written as is. A missing file starts from DEFAULTS with mode "off".
 export function updateConfig(home, mutator) {
   const file = layout(home).config;
-  const raw = readJsonSafe(file);
-  const base = isObj(raw) ? validate(raw).config : cloneDefaults();
-  const draft = structuredClone(base);
-  const next = mutator(draft) ?? draft;
-  const { config } = validate(next);
-  atomicWriteJson(file, config);
-  return config;
+  let exists = true;
+  try {
+    statSync(file);
+  } catch (err) {
+    if (err?.code !== "ENOENT") throw new Error("keepwarm config unreadable: " + file);
+    exists = false;
+  }
+  let raw;
+  if (exists) {
+    raw = readJsonSafe(file);
+    if (!isObj(raw)) throw new Error("keepwarm config unreadable: " + file);
+  }
+  const before = exists ? validate(raw).invalid : [];
+  const base = exists ? structuredClone(raw) : { ...cloneDefaults(), mode: "off" };
+  const next = mutator(base) ?? base;
+  if (!exists || !("v" in raw)) next.v = 1;
+  const introduced = validate(next).invalid.filter((k) => !before.includes(k));
+  if (introduced.length) throw new Error("keepwarm config invalid: " + introduced.join(", "));
+  atomicWriteJson(file, next);
+  return validate(next).config;
 }
 
 // Lanes whose TTL (and therefore grid) can come in more than one class keep their expiry

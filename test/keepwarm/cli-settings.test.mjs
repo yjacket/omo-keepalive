@@ -167,6 +167,14 @@ test("habit show, set validation, set, and auto", async (t) => {
   assert.equal(block((await call(expiryCli, h, [])).out, "claude-subscription"), CLAUDE_DEFAULT);
 });
 
+test("habit set keeps unknown habit keys", async (t) => {
+  const h = home(t);
+  atomicWriteJson(layout(h).config, { v: 1, habit: { p: 0.81, medianMinutes: 10.5, t90Minutes: 140, futureKey: 1 } });
+  const ok = await call(habitCli, h, ["set", "--return-rate", "0.7", "--median", "20m", "--t90", "3h"]);
+  assert.equal(ok.code, 0);
+  assert.deepEqual(JSON.parse(readFileSync(layout(h).config, "utf8")).habit, { p: 0.7, medianMinutes: 20, t90Minutes: 180, futureKey: 1 });
+});
+
 test("status: no snapshot", async (t) => {
   const h = home(t);
   const o = await call(statusCli, h, []);

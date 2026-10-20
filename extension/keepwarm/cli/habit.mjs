@@ -57,7 +57,7 @@ function set(home, now, args, io) {
     return 2;
   }
   updateConfig(home, (c) => {
-    c.habit = { p, medianMinutes: m, t90Minutes: t90 };
+    c.habit = { ...(c.habit !== null && typeof c.habit === "object" && !Array.isArray(c.habit) ? c.habit : {}), p, medianMinutes: m, t90Minutes: t90 };
   });
   return show(home, now, io);
 }
