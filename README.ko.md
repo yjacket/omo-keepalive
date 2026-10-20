@@ -161,8 +161,10 @@ goal 대기 중 화면의 캐시 묶음에는 이런 줄이 붙는다.
 | `/keepalive resume` | 한도 대기를 풀고 바로 재개. 여전히 임계치 위여도 재개 시점에 넘어 있던 창들이 리셋될 때까지 다시 대기하지 않는다(남은 사용량을 일부러 쓰는 것. 리셋 시각을 모르는 창은 보유하지 않는다). 그 밖의 창이 임계치를 넘거나, `/keepalive park`, `off` 뒤 `on`, 실제 한도 오류가 나면 다시 대기한다 |
 | `/keepalive park` | 지금 세션 안에서 한도 대기. 현재 사용량이 이미 park 판정일 때만 동작하고, 아니면(사용량이 임계치 아래이거나 아직 판정이 없을 때) 대기를 걸지 않고 그 사실을 한 줄로 알린다 |
 | `/keepalive off` / `on` | 이 세션에서 끄기 / 켜기 |
-| `/keepalive set expiry <lane> <값\|auto>` | lane별 데울 최대 시간 바꾸기 (예: `claude-subscription 4h`) |
-| `/keepalive set habit auto` / `--return-rate <p> --median <m> --t90 <t>` | 복귀 습관을 자동으로 두거나 직접 정하기 |
+| `/keepalive set expiry` | lane별로 자리를 비운 뒤 데우는 최대 시간과 고를 수 있는 값(steps) 보기. `[ ]`가 지금 값 |
+| `/keepalive set expiry <lane> <step\|auto>` | 그 시간 바꾸기. step은 그 lane의 steps 중 하나(`0`은 데우지 않음), `auto`는 복귀 습관으로 계산. 예: `claude-subscription 4h`, `codex-subscription 1h30m` |
+| `/keepalive set habit` | 복귀 습관 보기 |
+| `/keepalive set habit auto` / `--return-rate <0-1> --median <dur> --t90 <dur>` | 복귀 습관을 기록에서 자동으로 두거나 직접 정하기. 돌아오는 비율, 복귀 시간 중앙값, 90%가 돌아오는 시간 (예: `--return-rate 0.8 --median 10m --t90 2h`) |
 | `/keepalive set mode on\|shadow\|off` | 캐시 데우기 설정. `on`은 ping을 보내고, `shadow`는 판단만 기록하고, `off`는 아무것도 하지 않는다 |
 | `/keepalive set backstop on\|off` | 데우기가 도는 동안 senpi goal backstop을 붙잡게 하기(`on`, 기본) 또는 절대 붙잡지 않기(`off`) |
 

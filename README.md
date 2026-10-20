@@ -163,8 +163,10 @@ Rollback: run `/keepalive set backstop off`. keepalive then never holds the back
 | `/keepalive resume` | Lift the park and resume now. While still over threshold it does not re-park until the windows that were over at resume reset (you are deliberately spending the remaining quota; a window over threshold with an unknown reset time is not held); any other window crossing the threshold, `/keepalive park`, `off` then `on`, or a real limit error still parks |
 | `/keepalive park` | Park in the session now, but only if the current usage already calls for a park. Otherwise (usage under the threshold, or no usage decision yet) it parks nothing and prints one Korean line saying so |
 | `/keepalive off` / `on` | Turn off / on for this session |
-| `/keepalive set expiry <lane> <value\|auto>` | Set how long a lane is kept warm (e.g. `claude-subscription 4h`) |
-| `/keepalive set habit auto` / `--return-rate <p> --median <m> --t90 <t>` | Let the return habit be learned, or set it yourself |
+| `/keepalive set expiry` | Show how long each lane is kept warm after you step away, and the steps it accepts; `[ ]` marks the current value |
+| `/keepalive set expiry <lane> <step\|auto>` | Change that time: one of the lane's steps (`0` means no warming) or `auto` (computed from your return habit). E.g. `claude-subscription 4h`, `codex-subscription 1h30m` |
+| `/keepalive set habit` | Show the return habit |
+| `/keepalive set habit auto` / `--return-rate <0-1> --median <dur> --t90 <dur>` | Let the return habit be learned, or set it yourself: share of absences you return from, median return time, time by which 90% return (e.g. `--return-rate 0.8 --median 10m --t90 2h`) |
 | `/keepalive set mode on\|shadow\|off` | Set cache warming: `on` sends pings, `shadow` only records decisions, `off` does nothing |
 | `/keepalive set backstop on\|off` | Let keepalive hold senpi's goal backstop while warming is live (`on`, default) or never hold it (`off`) |
 

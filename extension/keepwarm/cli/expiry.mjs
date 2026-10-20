@@ -96,11 +96,11 @@ function show(home, now, io) {
   return 0;
 }
 
-const USAGE = "usage: /keepalive set expiry <laneId|laneId:gridClass> <auto|0|20m|4h|90>\n";
+const USAGE = "usage: /keepalive set expiry <lane> <step|auto>\n";
 
 function set(home, now, args, io) {
   const [key, value] = args;
-  if (!key || value === undefined || args.length > 2) {
+  if (!key || args.length > 2) {
     io.stderr(USAGE);
     return 2;
   }
@@ -113,14 +113,18 @@ function set(home, now, args, io) {
     io.stderr(`expiry: unknown lane ${key}; lanes: ${keys.join(", ")}\n`);
     return 2;
   }
+  const grids = () => targets.map((d) => `${d.key} steps: ${steps(d.lane.grid)}`).join("\n");
+  if (value === undefined) {
+    io.stderr(`${USAGE}${grids()}\n`);
+    return 2;
+  }
   let v;
   if (value.trim().toLowerCase() === "auto") v = "auto";
   else {
     v = parseDuration(value);
     const onGrid = Number.isFinite(v) && targets.every((d) => d.lane.grid.includes(v));
     if (!onGrid) {
-      const grids = targets.map((d) => `${d.key} steps: ${steps(d.lane.grid)}`).join("\n");
-      io.stderr(`expiry: ${value} is not a step for ${key}\n${grids}\n`);
+      io.stderr(`expiry: ${value} is not a step for ${key}\n${grids()}\n`);
       return 2;
     }
   }

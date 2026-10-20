@@ -44,13 +44,45 @@ export function install(core) {
     if (wasOff !== (mode === "off")) core.refreshStatus();
   });
 
-  const usage = "Usage: /keepalive [status|resume|park|off|on] · /keepalive set expiry <lane> <값|auto> · /keepalive set habit auto|--return-rate <p> --median <m> --t90 <t> · /keepalive set mode on|shadow|off · /keepalive set backstop on|off";
+  const usage = ["Usage: /keepalive <명령>", ...[
+    ["status", "화면 보기 (명령 없이 /keepalive도 같다)"],
+    ["resume", "한도 대기를 풀고 바로 재개"],
+    ["park", "지금 한도 대기 (사용량이 임계치 위일 때만)"],
+    ["off | on", "이 세션에서 끄기 / 켜기"],
+    ["set expiry", "lane별 데우는 시간과 고를 수 있는 값(steps) 보기"],
+    ["set expiry <lane> <step|auto>", "데우는 시간 바꾸기 (예: set expiry claude-subscription 4h)"],
+    ["set habit", "복귀 습관 보기"],
+    ["set habit auto", "복귀 습관을 기록에서 자동으로"],
+    ["set habit --return-rate <0-1> --median <dur> --t90 <dur>", ""],
+    ["", "복귀 습관 직접 정하기 (돌아오는 비율, 복귀 시간 중앙값, 90%가 돌아오는 시간)"],
+    ["set mode on|shadow|off", "캐시 데우기 켜기 / 기록만 / 끄기"],
+    ["set backstop on|off", "데우는 동안 goal backstop 붙잡기 켜기 / 끄기"],
+  ].map(([cmd, text]) => `  ${cmd.padEnd(30)} ${text}`.trimEnd())].join("\n");
+  const expiryHint = [
+    "",
+    "바꾸기  /keepalive set expiry <lane> <step|auto>   예: claude-subscription 4h",
+    "        [ ]가 지금 값 · 0은 데우지 않음 · auto는 복귀 습관으로 계산",
+  ].join("\n");
+  const habitHint = [
+    "",
+    "바꾸기  /keepalive set habit auto | --return-rate <0-1> --median <dur> --t90 <dur>",
+    "        p 돌아오는 비율 · m 복귀 시간 중앙값 · t90 90%가 돌아오는 시간",
+  ].join("\n");
   const env = core.deps.env ?? process.env;
   const warmHome = () => env.OMO_KEEPWARM_HOME || join(core.homeDir, ".omo-keepwarm");
   // Cache-warming settings: /keepalive set expiry|habit|mode|backstop ...
   const SET_TARGETS = {
-    expiry: (args, io) => expiryCli(["set", ...args], io),
-    habit: (args, io) => habitCli(args[0] === "auto" ? ["auto"] : ["set", ...args], io),
+    // Without arguments expiry and habit show the current values, so the user sees what to type.
+    expiry: async (args, io) => {
+      if (args.length > 0) return expiryCli(["set", ...args], io);
+      await expiryCli([], io);
+      io.stdout(expiryHint);
+    },
+    habit: async (args, io) => {
+      if (args.length > 0) return habitCli(args[0] === "auto" ? ["auto"] : ["set", ...args], io);
+      await habitCli([], io);
+      io.stdout(habitHint);
+    },
     mode: async ([value], io) => {
       if (!["on", "shadow", "off"].includes(value)) {
         io.stderr(usage);
@@ -70,7 +102,7 @@ export function install(core) {
   };
 
   async function runSet([target, ...args], ctx) {
-    if (!Object.hasOwn(SET_TARGETS, target) || args.length === 0) {
+    if (!Object.hasOwn(SET_TARGETS, target)) {
       ctx.ui?.notify?.(usage, "info");
       return;
     }

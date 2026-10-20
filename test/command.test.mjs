@@ -197,6 +197,17 @@ test("set expiry and set habit change the cache-warming config", async (t) => {
   assert.match(h.notifications.at(-1).text, /^Usage: \/keepalive/);
 });
 
+test("set expiry and set habit without a value show the current values and write nothing", async (t) => {
+  const h = await setup(t);
+  await h.command.handler("set expiry", h.ctx);
+  assert.match(h.notifications.at(-1).text, /^claude-subscription {2}TTL .*\n.*\n {2}steps: 0 · 1h · .*\[5h\]/);
+  await h.command.handler("set expiry claude-subscription", h.ctx);
+  assert.match(h.notifications.at(-1).text, /\nclaude-subscription steps: 0 · 1h · 2h/);
+  await h.command.handler("set habit", h.ctx);
+  assert.match(h.notifications.at(-1).text, /^habit default \(p /);
+  assert.equal(h.readHomeJson(".omo-keepwarm/config.json"), null);
+});
+
 test("set mode changes the cache-warming config", async (t) => {
   const h = await setup(t);
   await h.command.handler("set mode shadow", h.ctx);
@@ -224,7 +235,7 @@ test("invalid set backstop prints usage and leaves config unchanged", async (t) 
   await h.command.handler("set backstop maybe", h.ctx);
   const text = h.notifications.at(-1).text;
   assert.match(text, /^Usage: \/keepalive/);
-  assert.match(text, /\/keepalive set backstop on\|off/);
+  assert.match(text, /set backstop on\|off/);
   assert.deepEqual(h.readHomeJson(".omo-keepwarm/config.json"), before);
 });
 
