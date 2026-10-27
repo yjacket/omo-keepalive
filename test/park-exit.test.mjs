@@ -1007,3 +1007,37 @@ for (const [name, failure] of [
     } finally { withWarning.h.cleanup(); clean.h.cleanup(); }
   });
 }
+
+// #4: a late report or an in-flight attempt after session_shutdown must not write a record without a session id.
+test("a background count reported after session_shutdown writes no park record", async () => {
+  const p = proc();
+  try {
+    await p.wake(1, "terminal-background-sessions");
+    await p.start();
+    assert.equal(p.core.state.parkExit.holdReason, "background-running:terminal-background-sessions");
+    await p.h.fire("session_shutdown", { type: "session_shutdown" });
+    await p.wake(0, "terminal-background-sessions");
+    await p.h.clock.tick(3600000);
+    assert.deepEqual(p.listing(), []);
+    assert.equal(p.h.shutdownCalls.length, 0);
+  } finally { p.h.cleanup(); }
+});
+
+test("an exit attempt still reading the goal when the session shuts down writes no park record", async () => {
+  const p = proc({ daemon: "stale" });
+  try {
+    await p.start();
+    assert.equal(p.core.state.parkExit.holdReason, "health-daemon-not-fresh");
+    p.h.writeHomeJson(".omo-health/daemon.json", { ts: T0 - 5000, pid: 77, capabilities: ["park-resume"] });
+    let release;
+    const gate = new Promise((resolve) => { release = resolve; });
+    const read = p.h.goalStore.read.bind(p.h.goalStore);
+    p.h.goalStore.read = async (...args) => { await gate; return read(...args); };
+    const settling = p.settle();
+    await p.h.fire("session_shutdown", { type: "session_shutdown" });
+    release();
+    await settling;
+    assert.deepEqual(p.listing(), []);
+    assert.equal(p.h.shutdownCalls.length, 0);
+  } finally { p.h.cleanup(); }
+});
