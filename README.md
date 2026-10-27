@@ -71,7 +71,7 @@ Claude and Codex subscription sessions are kept warm while you are away, so the 
 
 ### omo-ai preview-safe patch
 
-Senpi builds the cache-warm ping from a preview of the prompt, and it skips the whole ping when an extension's `before_agent_start` handler is not marked `previewSafe`. Two of omo-ai's handlers (gateway rules and onboarding) are not marked, so keepalive patches `plugin/extensions/omo.js` in the installed omo-ai, adding `{previewSafe:!0}` to those two registrations, so the ping can be built. The patch runs once per process, is idempotent, and changes nothing when the bundle shape is unknown (it reports the reason instead). The original is kept at `omo.js.before-previewsafe`. It is re-applied after omo-ai updates, and takes effect at the next launch. Set `OMO_KEEPALIVE_PREVIEW_SAFE=off` to skip it.
+Only for omo-ai older than 5.1.43; from 5.1.43 omo-ai marks its own handlers and keepalive leaves the bundle alone. Senpi builds the cache-warm ping from a preview of the prompt, and it skips the whole ping when an extension's `before_agent_start` handler is not marked `previewSafe`. In those older versions two of omo-ai's handlers (gateway rules and onboarding) are not marked, so keepalive patches `plugin/extensions/omo.js` in the installed omo-ai, adding `{previewSafe:!0}` to those two registrations, so the ping can be built. The patch runs once per process, is idempotent, and changes nothing when the bundle shape is unknown (it reports the reason instead). The original is kept at `omo.js.before-previewsafe`. It is re-applied after omo-ai updates, and takes effect at the next launch. Set `OMO_KEEPALIVE_PREVIEW_SAFE=off` to skip it.
 
 ## omo-health
 

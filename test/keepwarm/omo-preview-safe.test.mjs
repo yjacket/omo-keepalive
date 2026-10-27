@@ -3,7 +3,7 @@ import { mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, utimesSync, wri
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { test } from "node:test";
-import { ensureOmoPreviewSafe, patchOmoSource } from "../../extension/keepwarm/omo-preview-safe.mjs";
+import { ensureOmoPreviewSafe, omoSelfPreviewSafe, patchOmoSource } from "../../extension/keepwarm/omo-preview-safe.mjs";
 
 const FLAG = ",{previewSafe:!0}";
 
@@ -50,11 +50,12 @@ test("a bundle without the gateway store is no-match", () => {
   assert.equal(r.status, "no-match");
 });
 
-function omoTree(files) {
+function omoTree(files, version) {
   const root = mkdtempSync(join(tmpdir(), "psafe-test-"));
   const bin = join(root, "bin", "omo.js");
   mkdirSync(dirname(bin), { recursive: true });
   writeFileSync(bin, "// bin\n");
+  if (version !== undefined) writeFileSync(join(root, "package.json"), JSON.stringify({ name: "omo-ai", version }));
   const file = join(root, "plugin", "extensions", "omo.js");
   if (files !== null) {
     mkdirSync(dirname(file), { recursive: true });
@@ -92,6 +93,33 @@ test("ensureOmoPreviewSafe: patched writes the file and a backup once; second ca
     const second = ensureOmoPreviewSafe({ env, validate: okValidate });
     assert.equal(second.status, "already");
     assert.equal(readFileSync(t.file + ".before-previewsafe", "utf8"), original, "backup is not overwritten");
+  } finally {
+    t.cleanup();
+  }
+});
+
+test("omoSelfPreviewSafe: 5.1.43 and later only", () => {
+  for (const v of ["5.1.43", "5.1.48", "5.2.0", "6.0.0", "5.1.43-beta.1"]) assert.equal(omoSelfPreviewSafe(v), true, v);
+  for (const v of ["5.1.42", "5.0.99", "4.9.100", null, "", "x"]) assert.equal(omoSelfPreviewSafe(v), false, String(v));
+});
+
+test("ensureOmoPreviewSafe: omo-ai 5.1.43+ is not-needed and the bundle is left alone", () => {
+  const original = bundle(GATEWAY, ONBOARD);
+  const t = omoTree(original, "5.1.43");
+  try {
+    assert.deepEqual(ensureOmoPreviewSafe({ env: { OMO_BIN: t.bin }, validate: okValidate }), { status: "not-needed", version: "5.1.43" });
+    assert.equal(readFileSync(t.file, "utf8"), original);
+  } finally {
+    t.cleanup();
+  }
+});
+
+test("ensureOmoPreviewSafe: omo-ai older than 5.1.43 is still patched", () => {
+  const original = bundle(GATEWAY, ONBOARD);
+  const t = omoTree(original, "5.1.42");
+  try {
+    assert.equal(ensureOmoPreviewSafe({ env: { OMO_BIN: t.bin }, validate: okValidate }).status, "patched");
+    assert.equal(readFileSync(t.file, "utf8"), patchOmoSource(original).out);
   } finally {
     t.cleanup();
   }

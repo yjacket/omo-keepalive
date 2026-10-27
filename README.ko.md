@@ -70,7 +70,7 @@ Claude 구독과 Codex 구독 세션을 자리를 비운 동안 데워, 돌아�
 
 ### omo-ai 미리보기 안전 패치
 
-Senpi는 캐시 데우기 ping을 프롬프트 미리보기로 만들고, `before_agent_start` 핸들러에 `previewSafe` 표시가 없으면 그 ping 전체를 건너뛴다(Claude ping이 나가지 않는 이유). omo-ai의 핸들러 두 개(게이트웨이 규칙, 온보딩)에 표시가 없어서, keepalive가 설치된 omo-ai의 `plugin/extensions/omo.js`에서 두 등록에 `{previewSafe:!0}`를 붙인다. 패치는 프로세스당 한 번 실행되고 여러 번 적용해도 같으며, 번들 모양을 알 수 없으면 아무것도 바꾸지 않고 이유를 알린다. 원본은 `omo.js.before-previewsafe`로 남는다. omo-ai를 업데이트하면 다시 적용되고, 다음 실행부터 적용된다. `OMO_KEEPALIVE_PREVIEW_SAFE=off`로 건너뛸 수 있다.
+omo-ai 5.1.43보다 오래된 버전에만 해당한다. 5.1.43부터는 omo-ai가 자기 핸들러에 직접 표시를 붙이므로 keepalive는 번들을 건드리지 않는다. Senpi는 캐시 데우기 ping을 프롬프트 미리보기로 만들고, `before_agent_start` 핸들러에 `previewSafe` 표시가 없으면 그 ping 전체를 건너뛴다(Claude ping이 나가지 않는 이유). 그 이전 버전에서는 omo-ai의 핸들러 두 개(게이트웨이 규칙, 온보딩)에 표시가 없어서, keepalive가 설치된 omo-ai의 `plugin/extensions/omo.js`에서 두 등록에 `{previewSafe:!0}`를 붙인다. 패치는 프로세스당 한 번 실행되고 여러 번 적용해도 같으며, 번들 모양을 알 수 없으면 아무것도 바꾸지 않고 이유를 알린다. 원본은 `omo.js.before-previewsafe`로 남는다. omo-ai를 업데이트하면 다시 적용되고, 다음 실행부터 적용된다. `OMO_KEEPALIVE_PREVIEW_SAFE=off`로 건너뛸 수 있다.
 
 ## omo-health 연동
 

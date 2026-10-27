@@ -1,11 +1,24 @@
 // Marks omo-ai's two unflagged before_agent_start registrations previewSafe, so senpi's prompt-prefix preview
 // (keepwarm's cache ping) is not blocked by them. Idempotent and fail-closed: it changes the bundle only when
 // exactly the two known registrations are found, and only when the result parses.
+// omo-ai 5.1.43 and later register those handlers previewSafe themselves, so the patch is skipped there.
 import { existsSync as nodeExistsSync, readFileSync as nodeReadFileSync, renameSync as nodeRenameSync, statSync as nodeStatSync, utimesSync as nodeUtimesSync, writeFileSync as nodeWriteFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 
 const FLAG = ",{previewSafe:!0}";
 const BACKUP_SUFFIX = ".before-previewsafe";
+const SELF_SAFE_SINCE = [5, 1, 43];
+
+// True when the omo-ai version string is SELF_SAFE_SINCE or later; false when it is older or unreadable.
+export function omoSelfPreviewSafe(version) {
+  const m = /^(\d+)\.(\d+)\.(\d+)/.exec(String(version ?? ""));
+  if (!m) return false;
+  for (let i = 0; i < 3; i++) {
+    const part = Number(m[i + 1]);
+    if (part !== SELF_SAFE_SINCE[i]) return part > SELF_SAFE_SINCE[i];
+  }
+  return true;
+}
 
 // Index of the "}" matching the block whose body starts at `start` (minified-JS aware: strings, templates, regex, comments).
 function matchBrace(s, start) {
@@ -97,7 +110,11 @@ export function ensureOmoPreviewSafe({ env = process.env, fs = { existsSync: nod
   if (!env.OMO_BIN) return { status: "no-omo" };
   let file;
   try {
-    file = join(dirname(dirname(env.OMO_BIN)), "plugin", "extensions", "omo.js");
+    const root = dirname(dirname(env.OMO_BIN));
+    let version = null;
+    try { version = JSON.parse(fs.readFileSync(join(root, "package.json"), "utf8")).version ?? null; } catch {}
+    if (omoSelfPreviewSafe(version)) return { status: "not-needed", version };
+    file = join(root, "plugin", "extensions", "omo.js");
     if (!fs.existsSync(file)) return { status: "no-omo", file };
     const src = fs.readFileSync(file, "utf8");
     const r = patchOmoSource(src);
