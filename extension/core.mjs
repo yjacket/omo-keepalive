@@ -105,7 +105,7 @@
 // core.now(), core.hhmm(ms)                  injected clock; HH:MM today, M/D HH:MM on another local day
 // core.setStatus(text|undefined), core.notify(text, level), core.recordError(where, err)
 // core.blockReason()                         "keepalive: usage limit <window> <util>% - resumes <HH:MM>"
-// core.texts                                 {resetResume, raceNote, goalHeld(hhmm)}
+// core.texts                                 {resetResume, limitRescue, raceNote, goalHeld(hhmm)}
 //
 // deps: {env, homeDir, fs (sync node:fs subset), now, setTimeout, clearTimeout, readUsage, goalStore}
 //   goalStore: {read(ctx) -> goal|null, setStatus(ctx, status) -> goal}; default loads senpi's goal store.
@@ -132,6 +132,7 @@ const MAX_TIMER_MS = 2147483647;
 
 export const TEXTS = {
   resetResume: "[keepalive] 사용량 한도가 리셋됐다. 중단 전 작업을 이어가라.",
+  limitRescue: "[keepalive] 한도 오류가 이어져 goal 자동 계속이 멈췄다. 쓸 수 있는 모델로 중단 전 작업을 이어가라.",
   raceNote: "사용량 한도 대기 중. 도구를 쓰지 말고 한 줄로 끝내라",
   goalHeld: (hhmm) => hhmm === null
     ? "goal은 리셋 시각을 아직 몰라 한도가 풀리면 시작합니다. 지금 돌리려면 /keepalive resume"
