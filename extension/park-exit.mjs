@@ -191,10 +191,16 @@ export function install(core) {
   }
 
   async function attempt(ctx = core.lastCtx) {
-    if (exited || busy || !wantsExit()) return;
+    // No session (after session_shutdown a late wake_source_state report still lands here): never write a record.
+    if (exited || busy || core.sessionId === null || !wantsExit()) return;
+    const sid = core.sessionId;
+    const epoch = core.sessionEpoch;
+    // The session ended or switched while this attempt awaited: drop it, the record would name the wrong session.
+    const gone = () => core.sessionEpoch !== epoch || core.sessionId !== sid;
     busy = (async () => {
       const owned = core.ownedGoalId();
       const goal = owned ? await core.readGoal(ctx) : null;
+      if (gone()) return undefined;
       if (!owned || goal?.id !== owned || goal.status !== "paused") return undefined;
       if (core.isLatecomer()) return undefined; // core contract: canParkExit() is false, the state stays as the core set it
       // Hold in park-wait (not stay in park-exit): T7 only arms its resume timer for park-wait, so a session that never
@@ -210,7 +216,6 @@ export function install(core) {
       const background = busyReason(ctx);
       if (background) return hold(background);
       if (ctx?.isIdle?.() !== true || ctx?.hasPendingMessages?.() === true) return hold("busy");
-      const sid = core.sessionId;
       const cwd = String(ctx?.cwd ?? ctx?.sessionManager?.getCwd?.() ?? process.cwd());
       let terminal = detectTerminal(env);
       let selfTask = null;
@@ -226,6 +231,12 @@ export function install(core) {
           core.recordError("park-exit-selflaunch", error);
         }
         if (registered?.launcherWarning) core.recordError("launcher", new Error(registered.launcherWarning));
+        if (gone()) {
+          if (registered?.ok === true && registered.selfTask) {
+            try { await selfLaunch.unregister({ sessionId: sid, selfTask: registered.selfTask }); } catch {}
+          }
+          return undefined;
+        }
         if (registered?.ok !== true) return hold("no-relauncher");
         selfTask = registered.selfTask ?? null;
         terminal = { kind: "self" };
@@ -419,6 +430,7 @@ export function install(core) {
     wake.clear();
     startGate = null;
     drained = false;
+    core.timers.clear(TIMER);
     core.timers.clear(GATE_TIMER);
     spawnSeen = false;
     busy = null;
