@@ -1,7 +1,7 @@
-// The park / goal-held notices live in a TUI widget (ctx.ui.setWidget), never in the conversation. senpi's default
-// compaction builtin converts EVERY custom message to a role:user message before keepalive's own context handler could
-// match it, so the only safe notice is one that is never a message. This test builds the model request the way senpi
-// does: session messages -> the REAL ExtensionRunner.emitContext with the REAL compaction builtin handler.
+// The park / goal-held notices live in a TUI widget (ctx.ui.setWidget), never in the conversation. senpi converts
+// EVERY custom message to a role:user message on the way to the model (core/messages.js convertToLlm), so the only
+// safe notice is one that is never a message. This test builds the model request the way senpi does: session
+// messages -> the REAL ExtensionRunner.emitContext with the REAL compaction builtin handler -> the REAL convertToLlm.
 import test from "node:test";
 import assert from "node:assert/strict";
 import { existsSync } from "node:fs";
@@ -23,6 +23,7 @@ async function realRunner() {
   const { loadExtensionFromFactory, createExtensionRuntime } = await load("core/extensions/loader.js");
   const { createEventBus } = await load("core/event-bus.js");
   const compaction = (await load("core/extensions/builtin/compaction/index.js")).default;
+  const { convertToLlm } = await load("core/messages.js");
   const bus = createEventBus();
   const runtime = createExtensionRuntime();
   const ext = await loadExtensionFromFactory(compaction, process.cwd(), bus, runtime, "<compaction>");
@@ -33,11 +34,11 @@ async function realRunner() {
     model: { contextWindow: 200000, maxTokens: 8000, provider: "anthropic", id: "claude-haiku-4-5" },
     sessionManager: { getEntries: () => [], getBranch: () => [] },
   });
-  return runner;
+  return { modelMessages: async (messages) => convertToLlm(await runner.emitContext(messages)) };
 }
 
 // What the session holds: the user's prompt plus every message keepalive posted through pi.sendMessage.
-const request = async (runner, h) => JSON.stringify(await runner.emitContext([
+const request = async (runner, h) => JSON.stringify(await runner.modelMessages([
   { role: "user", content: "hi", timestamp: 1 },
   ...h.sentMessages.map(({ msg }, i) => ({ role: "custom", customType: msg.customType, content: msg.content, display: msg.display, timestamp: 2 + i })),
 ]));
@@ -83,11 +84,12 @@ test("no-goal park notice is widget-only: never a message, never in the request"
   } finally { h.cleanup(); }
 });
 
-test("sanity: the real compaction handler does convert a posted custom message into a plain user message", { skip }, async () => {
+test("sanity: a posted custom message reaches the model as a plain user message", { skip }, async () => {
   const runner = await realRunner();
-  const out = await runner.emitContext([{ role: "custom", customType: "x", content: "LEAK", display: true, timestamp: 1 }]);
+  const out = await runner.modelMessages([{ role: "custom", customType: "x", content: "LEAK", display: true, timestamp: 1 }]);
   assert.equal(out[0].role, "user");
   assert.equal(out[0].customType, undefined);
+  assert.match(JSON.stringify(out), /LEAK/);
 });
 
 test("a session shutdown clears the notice widget", async () => {
