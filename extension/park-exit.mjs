@@ -37,7 +37,7 @@ export const PARK_RESUME_CAPABILITY = "park-resume"; // daemon.json capabilities
 export const CLAIM_FRESH_MS = 5 * 60_000; // relaunch window: a claim this young counts even without a start time
 const START_TOLERANCE_MS = 2000;
 const PROBE_TIMEOUT_MS = 5000;
-const GOAL_CONTINUATION_CAP = 8; // senpi goal/index.js:140-148
+export const GOAL_CONTINUATION_CAP = 8; // senpi goal/continuation.js:2
 const CHILD_WAKE_SOURCES = new Set(["senpi-task", "omo-dag"]); // omo-rollover/extension/rollover.ts:27
 const TIMER = "park-exit";
 const GATE_TIMER = "park-exit-gate";
@@ -104,7 +104,7 @@ const spawnCallsIn = (branch) => (Array.isArray(branch) ? branch : []).some((ent
   entry?.type === "message" && entry.message?.role === "assistant" && Array.isArray(entry.message.content)
   && entry.message.content.some((part) => part?.type === "toolCall" && SPAWN_TOOLS.has(part.name)));
 
-function trailingContinuations(branch) {
+export function trailingContinuations(branch) {
   let count = 0;
   const entries = Array.isArray(branch) ? branch : [];
   for (let i = entries.length - 1; i >= 0; i--) {

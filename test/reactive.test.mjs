@@ -6,22 +6,63 @@ import { createHarness } from "./harness.mjs";
 const local = (year, month, day, hour, minute = 0) => new Date(year, month, day, hour, minute).getTime();
 const T0 = local(2026, 9, 7, 12);
 const MODEL = { provider: "anthropic", api: "claude-sdk-oauth", id: "claude-fake" };
-const FAILED = (content) => ({
+// Production shape of a claude-sdk-oauth failure: no content, the text only in errorMessage.
+const FAILED = (errorMessage, model = "claude-fake") => ({
   type: "message_end",
-  message: { role: "assistant", stopReason: "error", content: [{ type: "text", text: content }] },
+  message: { role: "assistant", stopReason: "error", content: [], errorMessage, model },
 });
+const FABLE_LIMIT = "You've reached your Fable limit. Switch to another model to continue. (rate_limit)";
+const ALL_BLOCKED = "All Claude accounts for anthropic-subscription are currently blocked (rate limit or auth errors)";
 
 const LOW = { provider: "anthropic-subscription", account: "default", source: "endpoint", windows: [{ kind: "five_hour", utilization: 10, resetAt: T0 + 3600000 }] };
 const OVER = { provider: "anthropic-subscription", account: "default", source: "endpoint", windows: [{ kind: "five_hour", utilization: 95, resetAt: T0 + 3600000 }] };
 
-function setup({ env = {}, readUsage } = {}) {
-  const h = createHarness({ model: MODEL, now: T0, env });
+function setup({ env = {}, readUsage, branch } = {}) {
+  const h = createHarness({ model: MODEL, now: T0, env, branch });
   h.writeHomeJson(".omo/agent/auth.json", {
     "anthropic-subscription": { accounts: [{ name: "default", blockedUntil: null }] },
   });
   const core = startKeepalive(h.pi, h.deps({ readUsage }));
   return { h, core };
 }
+
+test("production errorMessage session limit parks with the reset parsed", async () => {
+  const { h, core } = setup();
+  try {
+    await h.fire("session_start", { type: "session_start" });
+    await h.fire("message_end", FAILED("You've hit your session limit · resets 4:10am (Asia/Seoul) (rate_limit)"));
+    assert.equal(core.isParked(), true);
+    assert.equal(core.state.source, "reactive");
+    assert.equal(core.state.resetAt, local(2026, 9, 8, 4, 10));
+  } finally { h.cleanup(); }
+});
+
+test("a model-scoped limit does not park: reached-your-model text or a future modelBlocks entry", async () => {
+  for (const [errorMessage, blocks] of [[FABLE_LIMIT, undefined], [ALL_BLOCKED, { fable: { blockedUntil: T0 + 60000 } }]]) {
+    const { h, core } = setup();
+    try {
+      h.writeHomeJson(".omo/agent/auth.json", {
+        "anthropic-subscription": { accounts: [{ name: "default", blockedUntil: null, modelBlocks: blocks }] },
+      });
+      await h.fire("session_start", { type: "session_start" });
+      await h.fire("message_end", FAILED(errorMessage, "claude-fable-5-1"));
+      assert.equal(core.isParked(), false, errorMessage);
+    } finally { h.cleanup(); }
+  }
+});
+
+test("an account-wide blockedUntil still parks even when the text names a model", async () => {
+  const { h, core } = setup();
+  try {
+    h.writeHomeJson(".omo/agent/auth.json", {
+      "anthropic-subscription": { accounts: [{ name: "default", blockedUntil: T0 + 3600000 }] },
+    });
+    await h.fire("session_start", { type: "session_start" });
+    await h.fire("message_end", FAILED(FABLE_LIMIT, "claude-fable-5-1"));
+    assert.equal(core.isParked(), true);
+    assert.equal(core.state.resetAt, T0 + 3600000);
+  } finally { h.cleanup(); }
+});
 
 test("limit error with blockedUntil parks to that time and never warms", async () => {
   const { h, core } = setup();
@@ -405,6 +446,91 @@ test("epoch seconds (not ms) are accepted for blockedUntil and for resets_at", a
         message: { role: "assistant", stopReason: "error", content: "usage limit reached", error: { resets_at: resetSec } },
       });
       assert.equal(core.state.resetAt, resetSec * 1000);
+    } finally { h.cleanup(); }
+  }
+});
+
+// ── Stalled-goal rescue: goal continuation stopped at the cap after limit errors ──
+const RESCUE = "[keepalive] 한도 오류가 이어져 goal 자동 계속이 멈췄다. 쓸 수 있는 모델로 중단 전 작업을 이어가라.";
+let entryId = 0;
+const userEntry = (text) => ({ type: "message", id: `e${++entryId}`, message: { role: "user", content: [{ type: "text", text }] } });
+const failedEntry = (errorMessage) => ({ type: "message", id: `e${++entryId}`,
+  message: { role: "assistant", stopReason: "error", content: [], errorMessage, model: "claude-fable-5-1" } });
+// One stop episode: the given user message, then GOAL_CONTINUATION_CAP continuations that each ended in errorMessage.
+const episode = (userText, errorMessage = FABLE_LIMIT) => [userEntry(userText), ...Array.from({ length: 8 }, () => [
+  { type: "custom_message", id: `e${++entryId}`, customType: "goal-continuation" }, failedEntry(errorMessage)]).flat()];
+
+async function settled({ branch, goal = { id: "g1", status: "active" }, auth } = {}) {
+  const { h, core } = setup({ branch, readUsage: async () => LOW });
+  if (auth) h.writeHomeJson(".omo/agent/auth.json", auth);
+  h.setGoal(goal);
+  await h.fire("session_start", { type: "session_start" });
+  await h.fire("agent_settled", { type: "agent_settled" });
+  return { h, core };
+}
+
+test("a goal stopped at the cap by limit errors gets exactly one user-message rescue per episode", async () => {
+  const branch = episode("start");
+  const { h } = await settled({ branch });
+  try {
+    assert.deepEqual(h.sentUserMessages.map((m) => m.text), [RESCUE]);
+    await h.fire("agent_settled", { type: "agent_settled" });
+    assert.equal(h.sentUserMessages.length, 1);
+    // The rescue was delivered and the new model failed again for a whole cap: a new episode, one more rescue.
+    branch.push(...episode(RESCUE, ALL_BLOCKED));
+    await h.fire("agent_settled", { type: "agent_settled" });
+    assert.equal(h.sentUserMessages.length, 2);
+  } finally { h.cleanup(); }
+});
+
+test("no rescue while keepalive is parked", async () => {
+  const { h, core } = setup({ branch: episode("start", "usage limit reached"), readUsage: async () => LOW });
+  try {
+    h.setGoal({ id: "g1", status: "active" });
+    await h.fire("session_start", { type: "session_start" });
+    await h.fire("message_end", FAILED("usage limit reached"));
+    assert.equal(core.isParked(), true);
+    await h.fire("agent_settled", { type: "agent_settled" });
+    assert.equal(h.sentUserMessages.length, 0);
+  } finally { h.cleanup(); }
+});
+
+test("no rescue below the cap, after a non-limit error, or without an active goal", async () => {
+  for (const [name, branch, goal] of [
+    ["below cap", episode("start").slice(0, -2), { id: "g1", status: "active" }],
+    ["non-limit error", episode("start", "server error 500"), { id: "g1", status: "active" }],
+    ["paused goal", episode("start"), { id: "g1", status: "paused" }],
+  ]) {
+    const { h } = await settled({ branch, goal });
+    try {
+      assert.equal(h.sentUserMessages.length, 0, name);
+    } finally { h.cleanup(); }
+  }
+});
+
+test("rescues stop after three in a row that never got a successful turn, and resume after progress", async () => {
+  const branch = [...episode("start"), ...episode(RESCUE), ...episode(RESCUE), ...episode(RESCUE)];
+  const { h } = await settled({ branch });
+  try {
+    assert.equal(h.sentUserMessages.length, 0);
+    assert.equal(h.notifications.filter((n) => n.text.includes("더 시도하지 않습니다")).length, 1);
+    await h.fire("agent_settled", { type: "agent_settled" });
+    assert.equal(h.notifications.filter((n) => n.text.includes("더 시도하지 않습니다")).length, 1);
+  } finally { h.cleanup(); }
+  const progressed = [...episode("start"), ...episode(RESCUE), ...episode(RESCUE)];
+  progressed.splice(progressed.length - 10, 0, { type: "message", id: "ok1", message: { role: "assistant", stopReason: "stop", content: [{ type: "text", text: "done a step" }] } });
+  const second = await settled({ branch: [...progressed, ...episode(RESCUE)] });
+  try {
+    assert.equal(second.h.sentUserMessages.length, 1);
+  } finally { second.h.cleanup(); }
+});
+
+test("a generic error text counts for the rescue only while a modelBlocks entry covers the failing model", async () => {
+  for (const [blocks, expected] of [[{ fable: { blockedUntil: T0 + 60000 } }, 1], [{ fable: { blockedUntil: T0 - 60000 } }, 0], [{ opus: { blockedUntil: T0 + 60000 } }, 0]]) {
+    const { h } = await settled({ branch: episode("start", "request failed"),
+      auth: { "anthropic-subscription": { accounts: [{ name: "default", blockedUntil: null, modelBlocks: blocks }] } } });
+    try {
+      assert.equal(h.sentUserMessages.length, expected, JSON.stringify(blocks));
     } finally { h.cleanup(); }
   }
 });
