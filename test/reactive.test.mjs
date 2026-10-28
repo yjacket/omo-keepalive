@@ -534,3 +534,23 @@ test("a generic error text counts for the rescue only while a modelBlocks entry 
     } finally { h.cleanup(); }
   }
 });
+
+test("senpi 2026.10.25-2: a goal the cap blocked after limit errors is reactivated, then gets one rescue message", async () => {
+  for (const blockedReason of ["continuation cap reached", "provider error ended the turn (retries exhausted)"]) {
+    const { h } = await settled({ branch: episode("start"), goal: { id: "g1", status: "blocked", blockedReason } });
+    try {
+      assert.deepEqual(h.goalStore.setStatusCalls, ["active"], blockedReason);
+      assert.deepEqual(h.sentUserMessages.map((m) => m.text), [RESCUE]);
+    } finally { h.cleanup(); }
+  }
+});
+
+test("a goal blocked for a non-mechanical reason, or by the cap after a non-limit error, is left alone", async () => {
+  for (const [errorMessage, blockedReason] of [[FABLE_LIMIT, "user interrupted the turn"], ["server error 500", "continuation cap reached"]]) {
+    const { h } = await settled({ branch: episode("start", errorMessage), goal: { id: "g1", status: "blocked", blockedReason } });
+    try {
+      assert.deepEqual(h.goalStore.setStatusCalls, [], blockedReason);
+      assert.equal(h.sentUserMessages.length, 0);
+    } finally { h.cleanup(); }
+  }
+});

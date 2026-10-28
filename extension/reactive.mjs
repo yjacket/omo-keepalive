@@ -14,6 +14,13 @@ const FAMILY_KEY = /^(?:opus|sonnet|haiku|fable|mythos)$/;
 // and is no proof the account is out, so it does not park; it still counts as a limit error for the stalled-goal rescue.
 const ALL_BLOCKED = /\ball\b.{0,40}\baccounts\b.{0,80}\bcurrently blocked\b/i;
 const RESCUE_LIMIT = 3; // consecutive rescues with no successful assistant turn in between
+// senpi goal/continuation-recovery.js (2026.10.25-2): mechanical blocks the goal sets on itself when automatic
+// continuation gives up. Only typed input reactivates them (direct-input-lifecycle.js skips source "extension").
+const STALL_BLOCKS = new Set([
+  "continuation cap reached",
+  "no progress across repeated automatic continuations (no new tool result, todo change, or new message)",
+  "provider error ended the turn (retries exhausted)",
+]);
 
 export function install(core) {
   const now = core.deps.now ?? Date.now;
@@ -172,9 +179,11 @@ export function install(core) {
     if (core.state.resetAt === null) scheduleCheck(); // includes a past reset that core.park normalized
   });
 
-  // Stalled-goal rescue. OMO stops goal continuation after GOAL_CONTINUATION_CAP continuations in a row, and its
-  // fallback tried set is cleared only by a user message_start, so a goal that ran into limit errors (typically a
-  // model-scoped limit after every fallback was tried once) idles until someone types. One user message resets both.
+  // Stalled-goal rescue. OMO stops goal continuation after GOAL_CONTINUATION_CAP continuations in a row (senpi
+  // 2026.10.25-2 also blocks the goal with a mechanical reason), and its fallback tried set is cleared only by a user
+  // message_start, so a goal that ran into limit errors (typically a model-scoped limit after every fallback was tried
+  // once) idles until someone types. Reactivating a blocked goal as "user" resets its streak; one user message
+  // resets the tried set.
   const lastAssistant = (branch) => {
     for (let i = branch.length - 1; i >= 0; i--) {
       const entry = branch[i];
@@ -198,7 +207,7 @@ export function install(core) {
   core.onBoundary(async (ctx, kind) => {
     if (kind !== "agent_settled" || !core.enabled() || core.isVetoed?.() || core.isParked()) return;
     const branch = ctx?.sessionManager?.getBranch?.();
-    if (!Array.isArray(branch) || trailingContinuations(branch) < GOAL_CONTINUATION_CAP) return;
+    if (!Array.isArray(branch)) return;
     const last = lastAssistant(branch);
     if (last?.stopReason !== "error") return;
     syncLane();
@@ -207,13 +216,17 @@ export function install(core) {
     const key = String(branch.at(-1)?.id ?? branch.length);
     if (core.state.limitRescue?.key === key) return;
     const goal = await core.readGoal(ctx);
-    if (goal?.status !== "active") return;
+    const blocked = goal?.status === "blocked" && STALL_BLOCKS.has(goal.blockedReason);
+    if (!blocked && !(goal?.status === "active" && trailingContinuations(branch) >= GOAL_CONTINUATION_CAP)) return;
     const streak = rescueStreak(branch);
     core.state.limitRescue = { key, at: now(), streak: streak + 1 };
     core.persist();
     if (streak >= RESCUE_LIMIT) {
       core.notify(`[keepalive] 한도 오류로 멈춘 goal을 ${RESCUE_LIMIT}번 이어서 다시 시작했지만 매번 실패해 더 시도하지 않습니다.`, "warning");
       return;
+    }
+    if (blocked) {
+      try { await core.setGoalStatus(ctx, "active"); } catch (error) { core.recordError("limit-rescue-goal", error); return; }
     }
     core.pi.sendUserMessage(core.texts.limitRescue);
   });
