@@ -15,13 +15,13 @@ omo install git:github.com/yjacket/omo-keepalive
 
 omo clones the repository into `~/.omo/agent/git/github.com/yjacket/omo-keepalive` and adds it to `packages` in `~/.omo/agent/settings.json`. Type `/reload` in running sessions.
 
-From a local checkout: `omo install C:/path/to/omo-keepalive`.
-
-**Update:** `omo update --extensions` (every installed package) or `omo update git:github.com/yjacket/omo-keepalive`, then `/reload`.
+**Update:** `omo update --extensions` updates every git-installed extension; `omo update --extension git:github.com/yjacket/omo-keepalive` updates only this one. Running sessions pick up the change after `/reload` or in a new session.
 
 If you installed with the old copy scripts, delete `~/.omo/agent/extensions/omo-limitless/`, or it loads next to the package.
 
 ## Migrating from omo-limitless and omo-keepwarm
+
+omo-limitless was renamed to omo-keepalive, and omo-keepwarm was merged into it. Both old packages are retired; don't reinstall them.
 
 1. Run `omo remove git:github.com/yjacket/omo-limitless`.
 2. Delete the file `~/.omo/agent/extensions/omo-keepwarm.ts` by hand.
@@ -88,7 +88,6 @@ It never exits while background work is running. These hold the exit:
 - monitors
 - a pending ask-user question
 - a loop-guard hard stop
-- a waiting omo-desk board
 - any other source whose count it can't read
 
 It waits in place and exits only after all of them are done and the session has handled the
@@ -185,15 +184,16 @@ Keys: `↑↓` move, `←→` change, `Enter`/`Space` next value, `r` restore de
 
 Every keepalive config value except `enabled` reaches every running session as soon as the file is saved, including thresholds, in-session wait limits, warming during a park, and hand edits to `pollMinIntervalMs` or `resumeGraceMs`. Cache settings (the 캐시, 자리 비운 뒤 데우는 시간 and 복귀 습관 groups) reach running sessions within 5 seconds. Only `enabled` requires a file edit and `/reload`. An unreadable settings file is never overwritten.
 
-## Rollback
-
-1. Run `omo remove git:github.com/yjacket/omo-keepalive` (or your local path), then `omo install git:github.com/yjacket/omo-limitless`. The old version reads `~/.omo/limitless`, so move `~/.omo/keepalive` back to `~/.omo/limitless` before starting it.
-2. Recreate `~/.omo/agent/extensions/omo-keepwarm.ts` from `~/.omo-keepwarm/app/releases/<version>/extension/stub.ts.tpl`, replacing `__STUB_FORMAT__` with `1`.
-3. Type `/reload`.
-
 ## What it never does
 
 - No token refresh.
 - No fallback to another provider.
 - No paid overage spill.
 - No tools.
+
+## Development
+
+- Work in a git worktree on a branch and open a PR against `master`. Direct pushes to `master` are blocked; a PR merges only when the `test` check passes.
+- Run the tests locally with `npm test` (`node --test`). The engine tests (`test/notice-request.test.mjs`, `test/senpi-store.test.mjs`) need an installed omo-ai (`bun add -g omo-ai`), and CI installs it too.
+- To try a working copy in omo, `omo install C:/dev/omo/omo-keepalive` is fine for a quick check. Switch back to the git install afterwards.
+- Live tests must not touch your real `~/.omo`, the running omo-health daemon or scheduled tasks. Point `HOME`, `USERPROFILE`, `APPDATA`, `LOCALAPPDATA` and `PI_CODING_AGENT_DIR` at a temp directory.

@@ -14,13 +14,13 @@ omo install git:github.com/yjacket/omo-keepalive
 
 omo가 저장소를 `~/.omo/agent/git/github.com/yjacket/omo-keepalive`에 클론하고 `~/.omo/agent/settings.json`의 `packages`에 등록한다. 실행 중인 세션에서 `/reload`를 입력한다.
 
-로컬 체크아웃에서 설치: `omo install C:/path/to/omo-keepalive`.
-
-**업데이트:** `omo update --extensions`(설치된 패키지 전부) 또는 `omo update git:github.com/yjacket/omo-keepalive`를 실행한 뒤 `/reload`를 입력한다.
+**업데이트:** `omo update --extensions`는 git으로 설치한 확장을 모두 갱신하고, `omo update --extension git:github.com/yjacket/omo-keepalive`는 이 확장만 갱신한다. 실행 중인 세션은 `/reload` 뒤나 새 세션에서 바뀐 내용을 쓴다.
 
 예전 복사 스크립트로 설치했다면 `~/.omo/agent/extensions/omo-limitless/`를 지운다. 남겨 두면 패키지와 함께 로드된다.
 
 ## omo-limitless, omo-keepwarm에서 옮기기
+
+omo-limitless는 omo-keepalive로 이름이 바뀌었고, omo-keepwarm은 여기에 합쳐졌다. 두 옛 패키지는 더 쓰지 않으니 다시 설치하지 않는다.
 
 1. `omo remove git:github.com/yjacket/omo-limitless`를 실행한다.
 2. `~/.omo/agent/extensions/omo-keepwarm.ts` 파일을 직접 지운다.
@@ -87,7 +87,6 @@ omo-ai 5.1.43보다 오래된 버전에만 해당한다. 5.1.43부터는 omo-ai�
 - 모니터
 - 대기 중인 ask-user 질문
 - loop-guard 하드 정지
-- 대기 중인 omo-desk 보드
 - 개수를 읽을 수 없는 그 밖의 소스
 
 그 자리에서 기다리다가 모두 끝나고 세션이 끝남 알림을 처리한 뒤(다음 agent_settled)에만
@@ -183,15 +182,16 @@ goal 대기 중 화면의 캐시 묶음에는 이런 줄이 붙는다.
 
 `enabled`를 제외한 모든 keepalive 설정값은 파일을 저장하는 즉시 실행 중인 모든 세션에 반영된다. 임계치, 리셋 기다리기, 기다리는 동안 데우기뿐 아니라 `pollMinIntervalMs`와 `resumeGraceMs`를 직접 편집한 값도 반영된다. 캐시·자리 비운 뒤 데우는 시간·복귀 습관 묶음의 설정은 실행 중인 세션에 5초 안에 반영된다. `enabled`만 파일을 편집한 뒤 `/reload`해야 한다. 읽을 수 없는 설정 파일은 절대 덮어쓰지 않는다.
 
-## 되돌리기
-
-1. `omo remove git:github.com/yjacket/omo-keepalive`(또는 로컬 경로)를 실행하고 `omo install git:github.com/yjacket/omo-limitless`를 실행한다. 예전 버전은 `~/.omo/limitless`를 읽으므로, 시작하기 전에 `~/.omo/keepalive`를 `~/.omo/limitless`로 되돌린다.
-2. `~/.omo-keepwarm/app/releases/<version>/extension/stub.ts.tpl`로 `~/.omo/agent/extensions/omo-keepwarm.ts`를 다시 만든다. `__STUB_FORMAT__`은 `1`로 바꾼다.
-3. `/reload`를 입력한다.
-
 ## 하지 않는 일
 
 - 토큰을 갱신하지 않는다.
 - 다른 provider로 넘기지 않는다.
 - 유료 초과 사용으로 넘기지 않는다.
 - 도구를 등록하지 않는다.
+
+## 개발
+
+- 브랜치를 딴 git worktree에서 작업하고 `master`로 PR을 연다. `master`에 직접 push할 수 없고, PR은 `test` 체크가 통과해야 머지된다.
+- 로컬 테스트는 `npm test`(`node --test`)로 돌린다. 엔진 테스트(`test/notice-request.test.mjs`, `test/senpi-store.test.mjs`)는 설치된 omo-ai(`bun add -g omo-ai`)가 필요하고, CI도 설치해서 돌린다.
+- 작업 사본을 omo에서 잠깐 확인할 때만 `omo install C:/dev/omo/omo-keepalive`를 쓰고, 끝나면 git 설치로 되돌린다.
+- 실제 테스트는 진짜 `~/.omo`, 돌고 있는 omo-health 데몬, 예약 작업을 건드리면 안 된다. `HOME`, `USERPROFILE`, `APPDATA`, `LOCALAPPDATA`, `PI_CODING_AGENT_DIR`를 임시 폴더로 돌린다.
