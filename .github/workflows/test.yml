@@ -11,4 +11,24 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: 24
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: latest
+      # The engine tests (test/notice-request.test.mjs, test/senpi-store.test.mjs) load the installed senpi:
+      # through OMO_BIN, and from the bun global layout ~/.bun/install/global/node_modules/@code-yeongyu/senpi
+      # that `bun add -g omo-ai` creates on Windows.
+      - name: install omo engine (omo-ai)
+        run: bun add -g omo-ai
+      - name: point tests at the installed engine
+        shell: bash
+        run: |
+          node -e '
+            const p = require("path"), fs = require("fs"), os = require("os");
+            const g = p.join(os.homedir(), ".bun", "install", "global", "node_modules");
+            for (const f of ["omo-ai/bin/omo.js", "@code-yeongyu/senpi/dist/core/extensions/runner.js", "@code-yeongyu/senpi/dist/core/extensions/builtin/goal/store.js"])
+              if (!fs.existsSync(p.join(g, f))) throw new Error("missing " + p.join(g, f));
+            const line = "OMO_BIN=" + p.join(g, "omo-ai", "bin", "omo.js");
+            console.log(line);
+            fs.appendFileSync(process.env.GITHUB_ENV, line + "\n");
+          '
       - run: npm test
