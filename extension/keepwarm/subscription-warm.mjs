@@ -58,7 +58,9 @@ export function findSenpiRoot({
 
 async function loadSenpiModules(root) {
   const load = (name) => import(pathToFileURL(join(root, SUB, name)).href);
-  const [config, options, tools, customTools, executable, settings, boundary, bindingStore, authEnv, sync] = await Promise.all([
+  // Claude CLI-store accounts (senpi 2026.10.31-1+); an older senpi has neither module.
+  const optional = (name) => load(name).catch(() => null);
+  const [config, options, tools, customTools, executable, settings, boundary, bindingStore, authEnv, sync, cliDir, cliEnv] = await Promise.all([
     import(pathToFileURL(join(root, "dist", "config.js")).href),
     load("options.js"),
     load("tools.js"),
@@ -69,8 +71,17 @@ async function loadSenpiModules(root) {
     load("session-binding-store.js"),
     load("auth-environment.js"),
     load("session-sync.js"),
+    optional("claude-cli-account-dir.js"),
+    optional("claude-cli-environment.js"),
   ]);
-  return { config, options, tools, customTools, executable, settings, boundary, bindingStore, authEnv, sync };
+  return { config, options, tools, customTools, executable, settings, boundary, bindingStore, authEnv, sync, cliDir, cliEnv };
+}
+
+// The env of a Claude CLI-store account turn, built as senpi builds it (auth-lane prepareClaudeCliSlot): no token,
+// only the account's own config dir. Null when the running senpi has no CLI-store accounts.
+function claudeCliEnvBuilder(m) {
+  if (!m.cliDir?.accountDirFor || !m.cliEnv?.buildClaudeCliEnvironment) return null;
+  return (dirId, env) => m.cliEnv.buildClaudeCliEnvironment(env, { configDir: m.cliDir.accountDirFor(m.config.getAgentDir(), dirId) });
 }
 
 // The pi-ai Codex request module next to the running senpi (pi-ai's public index has no streamSimple). Looked up
@@ -131,15 +142,26 @@ function prefixMismatch(message) {
 const NO_BINDING = "no Claude SDK session binding";
 const MODEL_DIFFERS = "model differs from the bound SDK session";
 
-function claudeAuthLane(settings, credential) {
+// The lane senpi runs the bound account on: a Claude CLI-store account runs on "claude-cli" (auth-lane laneFor),
+// and the lane is part of the fingerprint the binding stored.
+function claudeAuthLane(settings, credential, accountName) {
   const accounts = Array.isArray(credential?.accounts) ? credential.accounts : [];
-  return { accounts, lane: settings.tokenInjection ?? (accounts.length > 0 ? "oauth-slots" : "ambient") };
+  const lane = settings.tokenInjection ?? (accounts.length > 0 ? "oauth-slots" : "ambient");
+  const account = accounts.find((a) => a?.name === accountName);
+  return { accounts, lane: lane === "oauth-slots" && account?.store === "claude-cli" ? "claude-cli" : lane };
 }
 
 // Token of the account the session is bound to. Never refreshed here: a refresh rotates the stored token
-// under senpi's feet, so a token close to expiry skips the ping instead.
-export function claudeAuthEnv({ settings, accountName, env, now, readAuth, stripManaged }) {
-  const { accounts, lane } = claudeAuthLane(settings, readAuth()?.["anthropic-subscription"]);
+// under senpi's feet, so a token close to expiry skips the ping instead. A Claude CLI-store account has no
+// stored token: its turn runs on its own config dir, where the CLI keeps and renews the login.
+export function claudeAuthEnv({ settings, accountName, env, now, readAuth, stripManaged, claudeCliEnv = null }) {
+  const { accounts, lane } = claudeAuthLane(settings, readAuth()?.["anthropic-subscription"], accountName);
+  if (lane === "claude-cli") {
+    const account = accounts.find((a) => a?.name === accountName);
+    if (account.signInRequired) throw authError(`account ${accountName} must sign in again with Claude`);
+    if (!claudeCliEnv) throw unsupported("this senpi has no Claude CLI account support");
+    return { lane, env: claudeCliEnv(account.dirId, env) };
+  }
   if (lane === "ambient") {
     const out = { ...env };
     for (const name of Object.keys(out)) if (name.startsWith("SENPI_")) delete out[name];
@@ -217,7 +239,7 @@ export function createClaudeForkPinger({
       return null;
     }
     const providerSettings = m.settings.loadAnthropicSubscriptionProviderSettingsFromDisk(cwd());
-    const { lane } = claudeAuthLane(providerSettings, credential);
+    const { lane } = claudeAuthLane(providerSettings, credential, binding.accountName);
     const queryOptions = await buildQueryOptions(m, { model, context, streamOptions, providerSettings, authLane: lane });
     const detail = fingerprintMismatch(m, binding, queryOptions, context, lane);
     return detail ? { reason: "prefix_mismatch", detail } : null;
@@ -245,6 +267,7 @@ export function createClaudeForkPinger({
       now,
       readAuth: authReader(m),
       stripManaged: m.authEnv.stripManagedAuthEnvironment,
+      claudeCliEnv: claudeCliEnvBuilder(m),
     });
     const queryOptions = await buildQueryOptions(m, { model, context, streamOptions, providerSettings, authLane: auth.lane });
     // The prefix may have changed since the segment opened: a fork of a differently-fingerprinted session never goes out.
