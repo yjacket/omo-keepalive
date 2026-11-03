@@ -43,6 +43,32 @@ test("maps Claude response and sends the expected endpoint headers", async () =>
   assert.equal(requests[1].options.headers.Authorization, "Bearer account-token");
 });
 
+test("a Claude CLI-store account reads its token from the account's own Claude config dir", async () => {
+  const dirId = "0123456789abcdef0123456789abcdef";
+  const requests = [];
+  const fs = {
+    readFile: async (path) => {
+      const p = String(path).replaceAll("\\", "/");
+      if (p === "/agent/auth.json") return JSON.stringify({ "anthropic-subscription": { type: "oauth", accounts: [{ name: "work", source: "login", store: "claude-cli", dirId }] } });
+      if (p === `/agent/anthropic-subscription-claude/${dirId}/.credentials.json`) {
+        return JSON.stringify({ claudeAiOauth: { accessToken: "cli-account-token", expiresAt: Date.now() + 3_600_000 } });
+      }
+      throw new Error("ENOENT");
+    },
+  };
+  const result = await readUsage({ provider: "anthropic-subscription", account: "work" }, {
+    env: { OMO_KEEPALIVE_AUTH_PATH: "/agent/auth.json" }, fs,
+    fetch: async (url, options) => {
+      requests.push({ url, options });
+      return jsonResponse(url.endsWith("/usage") ? await fixture("claude") : { account: { uuid: "u" } });
+    },
+    now: () => Date.now(),
+  });
+  assert.equal(result.source, "endpoint");
+  assert.equal(result.windows.length, 2);
+  assert.equal(requests[0].options.headers.Authorization, "Bearer cli-account-token");
+});
+
 test("profile identity request does not pass the account name as account ID", async () => {
   const requests = [];
   await readUsage({ provider: "anthropic-subscription", account: "work" }, {

@@ -230,6 +230,47 @@ test("claude fork ping turns an SDK error result into a thrown error", async () 
   await assert.rejects(pinger.ping({ ctx: claudeCtx() }), /rate limited/);
 });
 
+// senpi 2026.10.31-1+: a Claude account signed in through the Claude CLI has no token in auth.json, only its own config dir.
+const DIR_ID = "0123456789abcdef0123456789abcdef";
+const cliAccounts = (extra = {}) => () => ({ "anthropic-subscription": { accounts: [{ name: "default", source: "login", store: "claude-cli", dirId: DIR_ID, ...extra }] } });
+const cliEnv = (dirId, env) => ({ ...stripManaged(env), CLAUDE_CONFIG_DIR: `C:/a/anthropic-subscription-claude/${dirId}` });
+
+test("claudeAuthEnv runs a Claude CLI-store account on its own config dir without a token", () => {
+  const out = claudeAuthEnv({
+    settings: { tokenInjection: "oauth-slots" }, accountName: "default", env: { PATH: "p", CLAUDE_CODE_OAUTH_TOKEN: "old" },
+    now: () => NOW, readAuth: cliAccounts(), stripManaged, claudeCliEnv: cliEnv,
+  });
+  assert.deepEqual(out, { lane: "claude-cli", env: { PATH: "p", CLAUDE_CONFIG_DIR: `C:/a/anthropic-subscription-claude/${DIR_ID}` } });
+  assert.throws(
+    () => claudeAuthEnv({ settings: {}, accountName: "default", env: {}, now: () => NOW, readAuth: cliAccounts({ signInRequired: "legacy_sign_in_retired" }), stripManaged, claudeCliEnv: cliEnv }),
+    (e) => e.kind === "auth",
+  );
+  assert.throws(
+    () => claudeAuthEnv({ settings: {}, accountName: "default", env: {}, now: () => NOW, readAuth: cliAccounts(), stripManaged }),
+    (e) => e.kind === "unsupported",
+  );
+});
+
+test("claude fork ping of a Claude CLI-store account matches the binding senpi stored on the claude-cli lane", async () => {
+  const binding = { sdkSessionId: "sdk-1", accountName: "default", modelId: "claude-opus-5-5", ...fakeFingerprint({ tools: ["Read"] }, { systemPrompt: "s", tools: [] }, "claude-cli", "default") };
+  const senpi = fakeSenpi({ binding });
+  const load = async () => {
+    const modules = await senpi.load();
+    return {
+      ...modules,
+      config: { getAgentDir: () => "C:/a" },
+      cliDir: { accountDirFor: (agentDir, dirId) => `${agentDir}/anthropic-subscription-claude/${dirId}` },
+      cliEnv: { buildClaudeCliEnvironment: (env, { configDir }) => ({ ...stripManaged(env), CLAUDE_CONFIG_DIR: configDir }) },
+    };
+  };
+  const pinger = createClaudeForkPinger({ senpiRoot: ROOT, load, env: { PATH: "p", CLAUDE_CODE_OAUTH_TOKEN: "old" }, now: () => NOW, readAuth: cliAccounts() });
+  assert.equal(await pinger.probe({ ctx: claudeCtx() }), null);
+  await pinger.ping({ ctx: claudeCtx() });
+  const { options } = senpi.queries[0];
+  assert.equal(options.authLane, "claude-cli");
+  assert.deepEqual(options.env, { PATH: "p", CLAUDE_CONFIG_DIR: `C:/a/anthropic-subscription-claude/${DIR_ID}`, CLAUDE_CODE_TOTAL_TOKENS_REMINDER: "off" });
+});
+
 function fakeCodexApi(final) {
   const calls = [];
   return {

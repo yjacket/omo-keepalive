@@ -5,7 +5,7 @@ import { createHash } from "node:crypto";
 import { existsSync } from "node:fs";
 import { mkdir, readFile, rename, writeFile } from "node:fs/promises";
 import { homedir } from "node:os";
-import { delimiter, join } from "node:path";
+import { delimiter, dirname, join } from "node:path";
 import { accountEntry, epochMs } from "./state.mjs";
 
 const AUTH_URL = {
@@ -73,6 +73,15 @@ async function readJson(fs, path) {
     const data = await fs.readFile(path, "utf8");
     return parsedJson(typeof data === "string" ? data : data.toString("utf8"));
   } catch { return null; }
+}
+
+// A Claude CLI-store account (senpi 2026.10.31-1+) keeps no token in auth.json: the Claude CLI holds its login in
+// the account's own config dir, <agentDir>/anthropic-subscription-claude/<dirId>/.credentials.json.
+async function claudeCliCredential(fs, deps, entry) {
+  if (typeof entry.dirId !== "string" || !/^[0-9a-f]{32}$/.test(entry.dirId)) return null;
+  const file = join(dirname(authPath(deps)), "anthropic-subscription-claude", entry.dirId, ".credentials.json");
+  const oauth = (await readJson(fs, file))?.claudeAiOauth;
+  return { access: oauth?.accessToken, expires: oauth?.expiresAt };
 }
 
 async function request(fetchFn, url, token, provider, accountId, signal, deps = {}) {
@@ -271,13 +280,16 @@ async function readUsageImpl({ provider, account }, deps = {}) {
     const fs = deps.fs || { readFile };
     const auth = await readJson(fs, authPath(deps));
     const entry = accountEntry(auth, provider, account);
-    const token = entry?.access;
+    const credential = provider === "anthropic-subscription" && entry?.store === "claude-cli"
+      ? await claudeCliCredential(fs, deps, entry)
+      : entry;
+    const token = credential?.access;
     const accountId = entry?.accountId;
     if (typeof token !== "string" || !token || (provider === "chatgpt-subscription" && typeof accountId !== "string")) {
       value = none("account credentials unavailable");
     } else {
       const fetchFn = deps.fetch || globalThis.fetch;
-      const expired = Number.isFinite(entry.expires) && entry.expires <= now();
+      const expired = Number.isFinite(credential.expires) && credential.expires <= now();
       const endpoint = expired
         ? { unauthorized: true, error: "account token expired" }
         : await fetchMapped(fetchFn, provider, account, token, accountId, "endpoint", deps);
