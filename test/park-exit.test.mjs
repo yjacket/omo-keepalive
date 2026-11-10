@@ -450,7 +450,7 @@ test("F1: a count drop with no run ever after it still resumes in place at reset
   } finally { p.h.cleanup(); }
 });
 
-// The gate/deferral hold sits AFTER the owned-goal and latecomer checks: those states stay exactly as the core set them.
+// No owned goal remains untouched; a latecomer with an owned goal waits in place.
 test("F1: no owned goal with the start gate closed stays park-exit (IS-1), no hold", async () => {
   const p = proc({ goal: null, extra: { parkExitStartGraceMs: GRACE } });
   try {
@@ -462,14 +462,23 @@ test("F1: no owned goal with the start gate closed stays park-exit (IS-1), no ho
   } finally { p.h.cleanup(); }
 });
 
-test("F1: a latecomer with the start gate closed is not held and never park-exits", async () => {
-  const p = proc({ branch: [], extra: { parkExitStartGraceMs: GRACE } });
+test("F1: a latecomer with the start gate closed waits and resumes at reset without exiting", async () => {
+  let util = 95;
+  const p = proc({ branch: [], util: () => util, extra: { parkExitStartGraceMs: GRACE } });
   try {
     await p.startOnly();
     await p.h.clock.tick(0);
     assert.equal(p.core.isLatecomer(), true);
-    assert.equal(p.core.state.parkExit?.held ?? false, false);
-    assert.equal(p.core.state.parkExit?.holdReason ?? null, null);
+    assert.equal(p.core.state.parkState, "park-wait");
+    assert.equal(p.core.state.parkExit?.held, true);
+    assert.equal(p.core.state.parkExit?.holdReason, "latecomer");
+    assert.equal(p.core.timers.has("resume"), true);
+    assert.equal(p.h.goalStore.goal.status, "paused");
+    util = 10;
+    await p.h.clock.tick(RESET - T0 + 60000);
+    assert.equal(p.core.isParked(), false);
+    assert.equal(p.h.goalStore.goal.status, "active");
+    assert.equal(p.h.eventsEmitted.filter(e => e.name === "goal_store_changed").length, 1);
     assert.equal(p.h.shutdownCalls.length, 0);
   } finally { p.h.cleanup(); }
 });
