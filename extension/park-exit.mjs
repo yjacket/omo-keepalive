@@ -202,7 +202,7 @@ export function install(core) {
       const goal = owned ? await core.readGoal(ctx) : null;
       if (gone()) return undefined;
       if (!owned || goal?.id !== owned || goal.status !== "paused") return undefined;
-      if (core.isLatecomer()) return undefined; // core contract: canParkExit() is false, the state stays as the core set it
+      if (core.isLatecomer()) return hold("latecomer");
       // Hold in park-wait (not stay in park-exit): T7 only arms its resume timer for park-wait, so a session that never
       // settles still resumes in place at reset. The next settle / the grace timer re-attempts.
       if (drained) return hold("awaiting-settle");
