@@ -116,6 +116,7 @@ function limitLines({ state, config, now, hhmm, statusText }) {
   if (state.mode === "off") head = "⏹ 꺼짐 (이 세션)";
   // The same words as the status line, plus how long until the resume.
   else if (parked) head = Number.isFinite(state.resetAt) && state.resetAt > now ? `${statusText} (${duration(state.resetAt - now)} 뒤)` : statusText;
+  else if (state.refusalStop) head = `⛔ 재개한 goal이 ${hhmm(state.refusalStop.at)}에 정책 거부로 멈춤`;
   else head = "🔄 감시 중";
   lines.push(`한도  ${head}`);
   const windows = new Map();
