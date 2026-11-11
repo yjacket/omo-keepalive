@@ -16,6 +16,8 @@
 //     episode (counter), parkedAt, episodeNotified, latecomer, hadPriorTurns
 //     pausedByKeepalive (goal id paused by keepalive, or null), blocked (count), mode ("on"|"off")
 //     lastError {at, where, message}, lastRelease {at, reason}
+//     goalResume {at, reason}: keepalive restarted the goal (releaseOwnedGoal, limit rescue) and nobody typed since
+//     refusalStop {key, at, resumedAt, reason}: that restarted goal then stopped on a policy refusal (reactive.mjs)
 //     Features keep their own data under a key named after the feature (state.warm is the policy's warm).
 // core.keepwarm                            {controller, isInert}, set by warm.mjs (keepwarm runtime handle, unset until install)
 // core.backstop                           {status() -> {holding, tripped}}, set by backstop.mjs (unset until install): holds senpi's goal backstop while goal-wait warming is live
@@ -123,6 +125,8 @@ export const STATUS_KEY = "omo-keepalive";
 // Shown in the status slot while keepalive is on and not parked, so the user can see it is watching. A natively
 // wide emoji: the terminal reserves the two cells it draws (a narrow one like ♾️ overflows its single cell).
 export const IDLE_STATUS = "🔄";
+// Shown instead of the idle mark while a goal keepalive restarted sits stopped on a policy refusal (reactive.mjs).
+export const REFUSAL_STATUS = "⛔ 거부로 멈춤";
 export const SPAWN_TOOLS = new Set(["task", "task_create"]);
 export const NOTICE_WIDGET_KEY = "keepalive-notice";
 export const GOAL_CONTINUATION_PREFIX = "Continue working toward the active thread goal.";
@@ -165,7 +169,7 @@ const freshState = () => ({
   v: 1, parkState: "ok", armed: false, source: null, window: null, util: null, resetAt: null, reason: null,
   warm: null, decision: null, snapshots: [], lastPollAt: null, episode: 0, parkedAt: null, episodeNotified: false,
   latecomer: false, hadPriorTurns: false, pausedByKeepalive: null, blocked: 0, mode: "on", lastError: null,
-  lastRelease: null, resumeHold: null, usageHistory: [],
+  lastRelease: null, resumeHold: null, usageHistory: [], goalResume: null, refusalStop: null,
 });
 
 const USAGE_HISTORY_MS = 3 * 3600_000;
@@ -317,7 +321,8 @@ export function createCore(pi, { config, deps = {} } = {}) {
     setStatus(text) {
       try {
         const ui = core.lastCtx?.ui;
-        const idle = !vetoed && core.enabled() ? (ui?.theme?.fg?.("dim", IDLE_STATUS) ?? IDLE_STATUS) : undefined;
+        const [color, mark] = core.state.refusalStop ? ["warning", REFUSAL_STATUS] : ["dim", IDLE_STATUS];
+        const idle = !vetoed && core.enabled() ? (ui?.theme?.fg?.(color, mark) ?? mark) : undefined;
         ui?.setStatus?.(STATUS_KEY, text ?? idle);
       } catch (error) { core.state.lastError = { at: now(), where: "status", message: errText(error) }; }
     },
@@ -483,6 +488,8 @@ export function createCore(pi, { config, deps = {} } = {}) {
         return false;
       }
       core.state.lastRelease = { at: now(), reason };
+      core.state.goalResume = { at: now(), reason };
+      core.state.refusalStop = null;
       core.persist();
       // hasPendingMessages() counts senpi's queued steer/follow-up user text (agent-session.js pendingMessageCount =
       // _steeringMessages + _followUpMessages; pushed at :1745 while a run streams, removed at that message's
@@ -521,6 +528,7 @@ export function createCore(pi, { config, deps = {} } = {}) {
         s.parkedAt = now();
         s.latecomer = s.hadPriorTurns !== true;
         s.episodeNotified = false;
+        s.refusalStop = null; // the session ran on into a limit: an earlier refusal stop is over
       }
       core.setStatus(statusText(s.resetAt, now()));
       core.persist();

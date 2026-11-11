@@ -13,6 +13,9 @@ const FAMILY_KEY = /^(?:opus|sonnet|haiku|fable|mythos)$/;
 // Account rotation found no usable account for the model. Without an account-wide blockedUntil it carries no reset
 // and is no proof the account is out, so it does not park; it still counts as a limit error for the stalled-goal rescue.
 const ALL_BLOCKED = /\ball\b.{0,40}\baccounts\b.{0,80}\bcurrently blocked\b/i;
+// A provider policy refusal that ended the turn: senpi's claude-sdk-oauth lane (anthropic-subscription/refusal.js:3,
+// 2026.11.10) and OpenAI's cybersecurity flag. senpi ends it as senpi:no-turn-retry and sends no goal continuation.
+const REFUSAL = /Claude refused this request|flagged for possible cybersecurity risk/i;
 const RESCUE_LIMIT = 3; // consecutive rescues with no successful assistant turn in between
 // senpi goal/continuation-recovery.js (2026.10.25-2): mechanical blocks the goal sets on itself when automatic
 // continuation gives up. Only typed input reactivates them (direct-input-lifecycle.js skips source "extension").
@@ -228,6 +231,47 @@ export function install(core) {
     if (blocked) {
       try { await core.setGoalStatus(ctx, "active"); } catch (error) { core.recordError("limit-rescue-goal", error); return; }
     }
+    core.state.goalResume = { at: now(), reason: "limit-rescue" };
+    core.state.refusalStop = null;
+    core.persist();
     core.pi.sendUserMessage(core.texts.limitRescue);
+  });
+
+  // A goal keepalive restarted (reset resume or limit rescue) that then stops on a policy refusal waits for a person:
+  // senpi sends no continuation after senpi:no-turn-retry (issue #13). keepalive only shows and announces it. It never
+  // re-sends or switches provider: omo-health owns the refusal resume (omo-health#10), so a second sender would race it.
+  core.onBoundary(async (ctx, kind) => {
+    if (kind !== "agent_settled" || !core.enabled() || core.isVetoed?.() || core.isParked()) return;
+    const resumed = core.state.goalResume;
+    if (!resumed) return;
+    const branch = ctx?.sessionManager?.getBranch?.();
+    if (!Array.isArray(branch)) return;
+    const index = branch.findLastIndex((entry) => entry?.type === "message" && entry.message?.role === "assistant");
+    const last = branch[index]?.message;
+    if (!last || !REFUSAL.test(String(last.errorMessage ?? ""))) return;
+    if (Number.isFinite(last.timestamp) && last.timestamp < resumed.at) return; // a refusal from before the restart
+    const key = String(branch[index].id ?? index);
+    if (core.state.refusalStop?.key === key) return;
+    core.state.refusalStop = { key, at: now(), resumedAt: resumed.at, reason: resumed.reason };
+    core.persist();
+    core.setNotice(`⛔ keepalive가 재개한 goal이 ${core.hhmm(now())}에 정책 거부로 멈췄습니다 · 입력하면 이어집니다`);
+    core.refreshStatus();
+    core.notify("[keepalive] 재개한 goal이 정책 거부로 멈췄습니다. keepalive는 다시 보내지 않습니다.", "warning");
+  });
+
+  // Typed input (not keepalive's own rescue text) takes the goal back: the stop is no longer keepalive's to report.
+  const ownTexts = new Set([core.texts.limitRescue, core.texts.resetResume]);
+  core.pi.on("message_start", (event, ctx) => {
+    if (event?.message?.role !== "user" || ownTexts.has(messageText(event.message).trim())) return;
+    if (!core.state.goalResume && !core.state.refusalStop) return;
+    core.lastCtx = ctx;
+    const shown = Boolean(core.state.refusalStop);
+    core.state.goalResume = null;
+    core.state.refusalStop = null;
+    core.persist();
+    if (shown && !core.isParked()) {
+      core.setNotice(undefined);
+      core.refreshStatus();
+    }
   });
 }
