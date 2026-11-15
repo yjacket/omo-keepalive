@@ -104,13 +104,32 @@ const spawnCallsIn = (branch) => (Array.isArray(branch) ? branch : []).some((ent
   entry?.type === "message" && entry.message?.role === "assistant" && Array.isArray(entry.message.content)
   && entry.message.content.some((part) => part?.type === "toolCall" && SPAWN_TOOLS.has(part.name)));
 
+// The provider refused the turn for a usage or rate limit (senpi goal/provider-retry.js isLimitRefusal).
+const limitRefusal = (message) => {
+  const diagnostic = message?.providerDiagnostic;
+  return diagnostic?.category === "rate_limit" || diagnostic?.category === "quota"
+    || (diagnostic?.category === "unknown" && diagnostic.httpStatus === 429);
+};
+
+// Goal continuations since the last user message, counted the way senpi's load-time guard counts them
+// (goal/session-start-continuation.js readTrailingGoalContinuations, senpi#4085): a continuation whose turn the
+// provider refused for a limit ran no model turn and does not count, so a goal that waited a limit out still
+// resumes by itself after a relaunch and needs no kick.
 export function trailingContinuations(branch) {
   let count = 0;
+  let turn = [];
   const entries = Array.isArray(branch) ? branch : [];
   for (let i = entries.length - 1; i >= 0; i--) {
     const entry = entries[i];
-    if (entry?.type === "message" && entry.message?.role === "user") break;
-    if (entry?.type === "custom_message" && entry.customType === "goal-continuation") count += 1;
+    if (entry?.type === "message") {
+      if (entry.message?.role === "user") break;
+      if (entry.message?.role === "assistant") turn.push(entry.message);
+      continue;
+    }
+    if (entry?.type !== "custom_message" || entry.customType !== "goal-continuation") continue;
+    const refused = turn.length > 0 && turn.every((m) => m.stopReason === "error") && turn.some(limitRefusal);
+    if (!refused) count += 1;
+    turn = [];
   }
   return count;
 }
