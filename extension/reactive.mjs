@@ -1,5 +1,4 @@
 import { readAuthJson } from "./lane.mjs";
-import { GOAL_CONTINUATION_CAP, trailingContinuations } from "./park-exit.mjs";
 import { decide } from "./policy.mjs";
 import { accountEntry, epochMs } from "./state.mjs";
 
@@ -182,11 +181,12 @@ export function install(core) {
     if (core.state.resetAt === null) scheduleCheck(); // includes a past reset that core.park normalized
   });
 
-  // Stalled-goal rescue. OMO stops goal continuation after GOAL_CONTINUATION_CAP continuations in a row (senpi
-  // 2026.10.25-2 also blocks the goal with a mechanical reason), and its fallback tried set is cleared only by a user
-  // message_start, so a goal that ran into limit errors (typically a model-scoped limit after every fallback was tried
-  // once) idles until someone types. Reactivating a blocked goal as "user" resets its streak; one user message
-  // resets the tried set.
+  // Stalled-goal rescue. OMO stops goal continuation at its cap and blocks the goal with a mechanical reason (senpi
+  // 2026.10.25-2), and its fallback tried set is cleared only by a user message_start, so a goal that ran into limit
+  // errors (typically a model-scoped limit after every fallback was tried once) idles until someone types.
+  // Reactivating the blocked goal as "user" resets its streak; one user message resets the tried set. Only a blocked
+  // goal is rescued: from senpi 2026.11.13 (omo 5.1.70) a limit wait does not count toward the cap and the engine
+  // re-checks on its own, so an active goal with many failed continuations in a row is still being continued.
   const lastAssistant = (branch) => {
     for (let i = branch.length - 1; i >= 0; i--) {
       const entry = branch[i];
@@ -219,8 +219,7 @@ export function install(core) {
     const key = String(branch.at(-1)?.id ?? branch.length);
     if (core.state.limitRescue?.key === key) return;
     const goal = await core.readGoal(ctx);
-    const blocked = goal?.status === "blocked" && STALL_BLOCKS.has(goal.blockedReason);
-    if (!blocked && !(goal?.status === "active" && trailingContinuations(branch) >= GOAL_CONTINUATION_CAP)) return;
+    if (goal?.status !== "blocked" || !STALL_BLOCKS.has(goal.blockedReason)) return;
     const streak = rescueStreak(branch);
     core.state.limitRescue = { key, at: now(), streak: streak + 1 };
     core.persist();
@@ -228,9 +227,7 @@ export function install(core) {
       core.notify(`[keepalive] 한도 오류로 멈춘 goal을 ${RESCUE_LIMIT}번 이어서 다시 시작했지만 매번 실패해 더 시도하지 않습니다.`, "warning");
       return;
     }
-    if (blocked) {
-      try { await core.setGoalStatus(ctx, "active"); } catch (error) { core.recordError("limit-rescue-goal", error); return; }
-    }
+    try { await core.setGoalStatus(ctx, "active"); } catch (error) { core.recordError("limit-rescue-goal", error); return; }
     core.state.goalResume = { at: now(), reason: "limit-rescue" };
     core.state.refusalStop = null;
     core.persist();

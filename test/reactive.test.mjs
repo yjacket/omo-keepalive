@@ -460,7 +460,8 @@ const failedEntry = (errorMessage) => ({ type: "message", id: `e${++entryId}`,
 const episode = (userText, errorMessage = FABLE_LIMIT) => [userEntry(userText), ...Array.from({ length: 8 }, () => [
   { type: "custom_message", id: `e${++entryId}`, customType: "goal-continuation" }, failedEntry(errorMessage)]).flat()];
 
-async function settled({ branch, goal = { id: "g1", status: "active" }, auth } = {}) {
+const CAPPED = { id: "g1", status: "blocked", blockedReason: "continuation cap reached" };
+async function settled({ branch, goal = CAPPED, auth } = {}) {
   const { h, core } = setup({ branch, readUsage: async () => LOW });
   if (auth) h.writeHomeJson(".omo/agent/auth.json", auth);
   h.setGoal(goal);
@@ -478,6 +479,7 @@ test("a goal stopped at the cap by limit errors gets exactly one user-message re
     assert.equal(h.sentUserMessages.length, 1);
     // The rescue was delivered and the new model failed again for a whole cap: a new episode, one more rescue.
     branch.push(...episode(RESCUE, ALL_BLOCKED));
+    h.setGoal(CAPPED);
     await h.fire("agent_settled", { type: "agent_settled" });
     assert.equal(h.sentUserMessages.length, 2);
   } finally { h.cleanup(); }
@@ -495,11 +497,14 @@ test("no rescue while keepalive is parked", async () => {
   } finally { h.cleanup(); }
 });
 
-test("no rescue below the cap, after a non-limit error, or without an active goal", async () => {
+test("no rescue below the cap, after a non-limit error, or without a goal the cap blocked", async () => {
   for (const [name, branch, goal] of [
     ["below cap", episode("start").slice(0, -2), { id: "g1", status: "active" }],
-    ["non-limit error", episode("start", "server error 500"), { id: "g1", status: "active" }],
+    ["non-limit error", episode("start", "server error 500"), CAPPED],
     ["paused goal", episode("start"), { id: "g1", status: "paused" }],
+    // senpi 2026.11.13 (omo 5.1.70): a limit wait does not count toward the cap and the engine keeps re-checking,
+    // so the goal stays active past 8 failed continuations. keepalive must not send its restart message then.
+    ["active goal past the cap", [...episode("start"), ...episode("start").slice(1)], { id: "g1", status: "active" }],
   ]) {
     const { h } = await settled({ branch, goal });
     try {
