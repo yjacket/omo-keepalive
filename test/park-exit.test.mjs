@@ -724,6 +724,23 @@ test("relaunch with a cap-suppressed goal sends one kick message", async () => {
   } finally { first.h.cleanup(); }
 });
 
+test("relaunch whose tail holds limit-refused continuations kicks only when senpi suppresses the goal", async () => {
+  // senpi's load-time guard (goal/session-start-continuation.js readTrailingGoalContinuations, senpi#4085) skips a
+  // continuation whose turn the provider refused for a limit: 7 + 1 refused resumes on its own, 8 + 1 refused does not.
+  const run = { type: "custom_message", customType: "goal-continuation" };
+  const refused = [run, { type: "message", message: { role: "assistant", api: "claude-sdk-oauth", content: [], stopReason: "error",
+    errorMessage: "You've hit your usage limit.", providerDiagnostic: { category: "quota", httpStatus: 429 } } }];
+  for (const [plain, kicks] of [[7, 0], [8, 1]]) {
+    const first = await exitOnce();
+    try {
+      const second = proc({ homeDir: first.h.tmpHome, now: RESET + 120000, util: 10, pid: 1002,
+        goal: first.h.goalStore.goal, branch: [...PRIOR_TURN, ...Array(plain).fill(run), ...refused] });
+      await second.start();
+      assert.equal(second.h.sentUserMessages.length, kicks, `${plain} counted continuations + 1 refused`);
+    } finally { first.h.cleanup(); }
+  }
+});
+
 test("two instances for the same sid and parkId (sequential): the first claims and resumes, the second shuts down and writes nothing", async () => {
   const first = await exitOnce();
   try {
